@@ -1,0 +1,2373 @@
+name: Cyrus build v40
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('.github/workflows/build.yml') }}
+          restore-keys: |
+            gradle-${{ runner.os }}-
+
+      - name: Install NDK required by the VPN plugin
+        continue-on-error: true
+        run: |
+          SDK="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
+          yes | "$SDK/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null 2>&1 || true
+          "$SDK/cmdline-tools/latest/bin/sdkmanager" --install "ndk;27.0.12077973" || true
+
+      - name: Create project
+        run: flutter create --org com.erfan --project-name erfan --platforms=android app
+
+      - name: Write app code
+        run: |
+          rm -rf app/test
+          cat > app/lib/main.dart <<'DART_EOF'
+          import 'dart:async';
+          import 'dart:convert';
+          import 'dart:math' as math;
+
+
+          import 'package:flutter/material.dart';
+          import 'package:flutter/services.dart';
+          import 'package:flutter_v2ray_client/flutter_v2ray.dart';
+          import 'package:flutter_v2ray_client/model/v2ray_status.dart';
+
+          import 'package:http/http.dart' as http;
+          import 'dart:io';
+
+          import 'package:image_picker/image_picker.dart';
+          import 'package:file_picker/file_picker.dart';
+          import 'package:path_provider/path_provider.dart';
+          import 'package:permission_handler/permission_handler.dart';
+          import 'package:camera/camera.dart';
+          import 'package:zxing2/qrcode.dart';
+          import 'dart:typed_data';
+          import 'dart:ui' as ui;
+          import 'package:flutter/foundation.dart' show compute, debugPrint;
+          import 'package:shared_preferences/shared_preferences.dart';
+
+          // ============================================================
+          //  ثابت‌ها و زبان
+          // ============================================================
+
+          const appName = 'Cyrus';
+          const cGreen = Color(0xFF00E676);
+
+          Color _hsl(double h, double s, double l) => HSLColor.fromAHSL(
+                  1, h % 360, s.clamp(0.0, 1.0).toDouble(), l.clamp(0.0, 1.0).toDouble())
+              .toColor();
+
+          class AppTheme {
+            final String fa, en;
+            final Color bg0, bg1, accent, accent2, line, surface, nav, navLine;
+            final Color btnFill, btnIn, btnInLine, idle, card, selected, panel;
+            AppTheme(this.fa, this.en,
+                {required this.bg0,
+                required this.bg1,
+                required this.accent,
+                required this.accent2,
+                required this.line,
+                required this.surface,
+                required this.nav,
+                required this.navLine,
+                required this.btnFill,
+                required this.btnIn,
+                required this.btnInLine,
+                required this.idle,
+                required this.card,
+                required this.selected,
+                required this.panel});
+          }
+
+          AppTheme _mk(String fa, String en,
+              {required double acc,
+              double accSat = 1.0,
+              double accL = 0.56,
+              required double tint,
+              double tintSat = 0.65,
+              Color? top,
+              Color? bottom}) {
+            return AppTheme(fa, en,
+                bg0: bottom ?? _hsl(tint, tintSat, 0.03),
+                bg1: top ?? _hsl(tint, tintSat, 0.11),
+                accent: _hsl(acc, accSat, accL),
+                accent2: _hsl(acc + 8, accSat, accL + 0.05),
+                line: _hsl(acc, accSat * 0.7, accL * 0.8),
+                surface: _hsl(tint, tintSat, 0.085),
+                nav: _hsl(tint, tintSat, 0.045),
+                navLine: _hsl(tint, tintSat * 0.9, 0.14),
+                btnFill: _hsl(tint, tintSat, 0.055),
+                btnIn: _hsl(tint, tintSat * 0.85, 0.09),
+                btnInLine: _hsl(tint, tintSat * 0.8, 0.17),
+                idle: _hsl(acc, accSat * 0.6, 0.48),
+                card: _hsl(tint, tintSat, 0.10),
+                selected: _hsl(tint, tintSat * 0.8, 0.24),
+                panel: _hsl(tint, tintSat, 0.065));
+          }
+
+          final List<AppTheme> kThemes = [
+            _mk('آبی', 'Blue', acc: 208, tint: 222),
+            _mk('بنفش', 'Purple', acc: 270, tint: 268),
+            _mk('قرمز', 'Red', acc: 355, tint: 355),
+            _mk('سبز', 'Green', acc: 145, tint: 150),
+            _mk('زرد', 'Yellow', acc: 48, accL: 0.55, tint: 45, tintSat: 0.6),
+            _mk('نارنجی', 'Orange', acc: 24, tint: 22),
+            _mk('صورتی', 'Pink', acc: 325, tint: 325),
+            _mk('مشکی', 'Black',
+                acc: 0, accSat: 0, accL: 0.85, tint: 0, tintSat: 0,
+                top: const Color(0xFF111111), bottom: const Color(0xFF000000)),
+            _mk('قرمز و مشکی', 'Red × Black',
+                acc: 355, tint: 355, tintSat: 0.55,
+                top: const Color(0xFF45000A), bottom: const Color(0xFF000000)),
+            _mk('طلایی و مشکی', 'Gold × Black',
+                acc: 45, accL: 0.55, tint: 42, tintSat: 0.5,
+                top: const Color(0xFF3A2A00), bottom: const Color(0xFF000000)),
+            _mk('بنفش و آبی', 'Purple × Blue',
+                acc: 262, tint: 250, tintSat: 0.6,
+                top: const Color(0xFF2E1065), bottom: const Color(0xFF020A2E)),
+            _mk('صورتی و بنفش', 'Pink × Purple',
+                acc: 315, tint: 300, tintSat: 0.55,
+                top: const Color(0xFF5A0E4A), bottom: const Color(0xFF14062A)),
+            _mk('سبز و مشکی', 'Green × Black',
+                acc: 140, tint: 150, tintSat: 0.55,
+                top: const Color(0xFF00421C), bottom: const Color(0xFF000000)),
+            _mk('آتش', 'Fire',
+                acc: 18, tint: 10, tintSat: 0.6,
+                top: const Color(0xFF5A1A00), bottom: const Color(0xFF1C0004)),
+            _mk('اقیانوس', 'Ocean',
+                acc: 185, tint: 200, tintSat: 0.6,
+                top: const Color(0xFF004050), bottom: const Color(0xFF020F22)),
+          ];
+
+          final ValueNotifier<int> themePref = ValueNotifier<int>(0);
+
+          AppTheme get curTheme {
+            final i = themePref.value;
+            return kThemes[(i < 0 || i >= kThemes.length) ? 0 : i];
+          }
+
+          Color get cBg0 => curTheme.bg0;
+          Color get cBg1 => curTheme.bg1;
+          Color get cBlue => curTheme.accent;
+          Color get cCyan => curTheme.accent2;
+          Color get cLine => curTheme.line;
+          Color get cAccent => curTheme.accent;
+          Color get cCard => curTheme.card;
+          Color get cSelected => curTheme.selected;
+          Color get cPanel => curTheme.panel;
+          Color get cCardA => curTheme.card.withOpacity(0.93);
+          Color get cSurface => curTheme.surface;
+          Color get cNav => curTheme.nav;
+          Color get cNavLine => curTheme.navLine;
+          Color get cBtnFill => curTheme.btnFill;
+          Color get cBtnIn => curTheme.btnIn;
+          Color get cBtnInLine => curTheme.btnInLine;
+          Color get cIdle => curTheme.idle;
+
+
+          final ValueNotifier<String> langPref = ValueNotifier<String>('fa');
+
+          bool get isFa {
+            return langPref.value != 'en';
+          }
+
+          String tr(String fa, String en) => isFa ? fa : en;
+
+          // ============================================================
+          //  تنظیمات برنامه (ذخیره‌شده)
+          // ============================================================
+
+          class AppSettings {
+            String lang = 'fa';
+            bool autoBest = true;
+            bool autoSwitch = false;
+            bool autoUpdate = true;
+            bool autoSpeed = false;
+            bool autoReconnect = true;
+            bool batteryAsked = false;
+            bool wantOn = false;
+            bool perf = false;
+            bool realPing = false; // پینگ واقعی با هسته (کندتر)؛ خاموش = پینگ TCP تا سرور
+            bool debugLog = false; // لاگ دقیق هسته (کندتر)
+            bool nightMode = true; // وقتی وصلیم CPU نخوابه (پایداری شبانه)
+            int theme = 0;
+            bool fragment = false;
+            int ver = 0;
+            bool permOk = false;
+            String ua = 'v2rayNG/1.8.5';
+            bool proxyOnly = false;
+            bool bypassLan = false;
+            String dnsPreset = 'default';
+            String dnsCustom = '';
+            String domainStrategy = 'default';
+            bool bypassIr = false;
+            String directDomains = '';
+            String blockDomains = '';
+            String deviceId = '';
+
+            Map<String, dynamic> toMap() => {
+                  'lang': lang,
+                  'autoSpeed': autoSpeed,
+           'autoReconnect': autoReconnect,
+           'batteryAsked': batteryAsked,
+           'wantOn': wantOn,
+           'perf': perf,
+           'realPing': realPing,
+           'debugLog': debugLog,
+           'nightMode': nightMode,
+           'theme': theme,
+           'fragment': fragment,
+                  'ver': ver,
+           'permOk': permOk,
+                  'autoBest': autoBest,
+                  'autoSwitch': autoSwitch,
+                  'autoUpdate': autoUpdate,
+                  'ua': ua,
+                  'proxyOnly': proxyOnly,
+                  'bypassLan': bypassLan,
+                  'dnsPreset': dnsPreset,
+                  'dnsCustom': dnsCustom,
+                  'domainStrategy': domainStrategy,
+                  'bypassIr': bypassIr,
+                  'directDomains': directDomains,
+                  'blockDomains': blockDomains,
+                  'deviceId': deviceId,
+                };
+
+            Future<void> load() async {
+              final p = await SharedPreferences.getInstance();
+              final raw = p.getString('settings');
+              if (raw != null) {
+                try {
+                  final m = jsonDecode(raw) as Map<String, dynamic>;
+                  lang = (m['lang'] ?? lang) as String;
+                  autoSpeed = (m['autoSpeed'] ?? autoSpeed) as bool;
+           autoReconnect = (m['autoReconnect'] ?? autoReconnect) as bool;
+           batteryAsked = (m['batteryAsked'] ?? batteryAsked) as bool;
+           wantOn = (m['wantOn'] ?? wantOn) as bool;
+           perf = (m['perf'] ?? perf) as bool;
+           realPing = (m['realPing'] ?? realPing) as bool;
+           debugLog = (m['debugLog'] ?? debugLog) as bool;
+           nightMode = (m['nightMode'] ?? nightMode) as bool;
+           theme = (m['theme'] ?? theme) as int;
+           fragment = (m['fragment'] ?? fragment) as bool;
+                  ver = (m['ver'] ?? 0) as int;
+           permOk = (m['permOk'] ?? permOk) as bool;
+                  autoBest = (m['autoBest'] ?? autoBest) as bool;
+                  autoSwitch = (m['autoSwitch'] ?? autoSwitch) as bool;
+                  autoUpdate = (m['autoUpdate'] ?? autoUpdate) as bool;
+                  ua = (m['ua'] ?? ua) as String;
+                  proxyOnly = (m['proxyOnly'] ?? proxyOnly) as bool;
+                  bypassLan = (m['bypassLan'] ?? bypassLan) as bool;
+                  dnsPreset = (m['dnsPreset'] ?? dnsPreset) as String;
+                  dnsCustom = (m['dnsCustom'] ?? dnsCustom) as String;
+                  domainStrategy = (m['domainStrategy'] ?? domainStrategy) as String;
+                  bypassIr = (m['bypassIr'] ?? bypassIr) as bool;
+                  directDomains = (m['directDomains'] ?? directDomains) as String;
+                  blockDomains = (m['blockDomains'] ?? blockDomains) as String;
+                  deviceId = (m['deviceId'] ?? deviceId) as String;
+                } catch (_) {}
+              }
+              if (ver < 2) {
+                // نسخه جدید: وصل شدن خودکار و فرگمنت پیش‌فرض خاموش
+                fragment = false;
+                autoSpeed = false;
+                autoReconnect = false;
+                wantOn = false;
+                ver = 2;
+                await save();
+              }
+              if (ver < 3) {
+                // تعویض خودکار کانفیگ وسط اتصال باعث قطع و وصل می‌شد؛ پیش‌فرض خاموش
+                autoSwitch = false;
+                ver = 3;
+                await save();
+              }
+              if (ver < 4) {
+                // کانفیگ دست‌نخورده (مثل V2Box) پیش‌فرض؛ دستکاری‌های اضافه خاموش
+                perf = false;
+                ver = 4;
+                await save();
+              }
+              if (ver < 5) {
+                // قطع شدن شبانه: وصل مجدد خودکار پیش‌فرض روشن
+                autoReconnect = true;
+                ver = 5;
+                await save();
+              }
+              if (lang != 'en') lang = 'fa';
+              if (deviceId.isEmpty) {
+                deviceId = _uuid();
+                await save();
+              }
+              themePref.value = (theme < 0 || theme >= kThemes.length) ? 0 : theme;
+              langPref.value = lang;
+            }
+
+            Future<void> save() async {
+              final p = await SharedPreferences.getInstance();
+              await p.setString('settings', jsonEncode(toMap()));
+            }
+
+            List<String> listOf(String s) => s
+                .split(RegExp(r'[,\s]+'))
+                .map((e) => e.trim().toLowerCase())
+                .where((e) => e.isNotEmpty)
+                .toList();
+
+            List<String> dnsServers() {
+              switch (dnsPreset) {
+                case 'google':
+                  return ['8.8.8.8', '8.8.4.4'];
+                case 'cloudflare':
+                  return ['1.1.1.1', '1.0.0.1'];
+                case 'quad9':
+                  return ['9.9.9.9', '149.112.112.112'];
+                case 'adguard':
+                  return ['94.140.14.14', '94.140.15.15'];
+                case 'custom':
+                  return dnsCustom
+                      .split(RegExp(r'[,\s]+'))
+                      .map((e) => e.trim())
+                      .where((e) => e.isNotEmpty)
+                      .toList();
+                default:
+                  return [];
+              }
+            }
+          }
+
+          final AppSettings S = AppSettings();
+
+          String _uuid() {
+            final r = math.Random.secure();
+            final b = List<int>.generate(16, (_) => r.nextInt(256));
+            b[6] = (b[6] & 0x0f) | 0x40;
+            b[8] = (b[8] & 0x3f) | 0x80;
+            String h(int i) => b[i].toRadixString(16).padLeft(2, '0');
+            return '${h(0)}${h(1)}${h(2)}${h(3)}-${h(4)}${h(5)}-${h(6)}${h(7)}-${h(8)}${h(9)}-${h(10)}${h(11)}${h(12)}${h(13)}${h(14)}${h(15)}';
+          }
+
+          // ============================================================
+          //  main
+          // ============================================================
+
+          Future<void> main() async {
+            await runZonedGuarded(() async {
+              WidgetsFlutterBinding.ensureInitialized();
+              initEventLog();
+              FlutterError.onError = (d) => _coreEvent('FLUTTER ${d.exceptionAsString()}');
+              ErrorWidget.builder = (details) => Material(
+                    color: Colors.black,
+                    child: Center(
+                      child: Padding(
+                        padding: const EdgeInsets.all(20),
+                        child: Text(details.exceptionAsString(),
+                            style: const TextStyle(color: Colors.redAccent, fontSize: 12)),
+                      ),
+                    ),
+                  );
+              try {
+                await S.load();
+              } catch (_) {}
+              runApp(const ErfanApp());
+            }, (error, stack) {
+              _coreEvent('UNCAUGHT $error');
+            });
+          }
+
+          class ErfanApp extends StatelessWidget {
+            const ErfanApp({super.key});
+
+            @override
+            Widget build(BuildContext context) {
+              return ValueListenableBuilder<int>(
+                valueListenable: themePref,
+                builder: (_, __, ___) => MaterialApp(
+                title: appName,
+                debugShowCheckedModeBanner: false,
+                theme: ThemeData(
+                  useMaterial3: true,
+                  brightness: Brightness.dark,
+                  colorScheme: ColorScheme.fromSeed(
+                      seedColor: cAccent, brightness: Brightness.dark),
+                  scaffoldBackgroundColor: Colors.transparent,
+                ),
+                builder: (context, child) => ValueListenableBuilder<String>(
+                  valueListenable: langPref,
+                  builder: (_, __, ___) => Directionality(
+                    textDirection: isFa ? TextDirection.rtl : TextDirection.ltr,
+                    child: child!,
+                  ),
+                ),
+                home: const HomePage(),
+              ));
+            }
+          }
+
+          // ============================================================
+          //  مدل‌ها
+          // ============================================================
+
+          const String buildTag = 'v40';
+          V2ray? coreHandle;
+          final List<String> coreEvents = [];
+          String lastSentCfg = '';
+
+          String _hhmmss() {
+            final n = DateTime.now();
+            String two(int v) => v.toString().padLeft(2, '0');
+            return '${two(n.hour)}:${two(n.minute)}:${two(n.second)}';
+          }
+
+          String prevSessionEvents = '';
+          String eventsPath() => '${Directory.systemTemp.path}/erfan_events.log';
+
+          /// رویدادهای نشست قبلی (اگه برنامه ناگهانی بسته شده باشه آخرینشون دلیل رو نشون می‌ده)
+          void initEventLog() {
+            try {
+              final f = File(eventsPath());
+              if (f.existsSync()) {
+                final ls = f.readAsStringSync().split('\n');
+                prevSessionEvents = (ls.length > 60 ? ls.sublist(ls.length - 60) : ls).join('\n').trim();
+              }
+              f.writeAsStringSync('--- session ${DateTime.now()}\n');
+            } catch (_) {}
+          }
+
+          void _coreEvent(String e) {
+            final line = '${_hhmmss()} $e';
+            coreEvents.add(line);
+            if (coreEvents.length > 60) coreEvents.removeAt(0);
+            try {
+              File(eventsPath()).writeAsStringSync('$line\n', mode: FileMode.append, flush: true);
+            } catch (_) {}
+          }
+
+          /// کلیدها و رمزها پنهان می‌شن تا بشه گزارش رو امن فرستاد
+          dynamic _maskSecrets(dynamic v) {
+            const secret = {'secretkey', 'publickey', 'presharedkey', 'privatekey', 'password', 'id', 'uuid'};
+            if (v is Map) {
+              return {
+                for (final e in v.entries)
+                  e.key: secret.contains(e.key.toString().toLowerCase()) ? '***' : _maskSecrets(e.value),
+              };
+            }
+            if (v is List) return v.map(_maskSecrets).toList();
+            return v;
+          }
+
+          const MethodChannel _notifCh = MethodChannel('cyrus/notif');
+
+          String fmtRateB(double b) {
+            if (b < 1024) return '${b.toStringAsFixed(1)} B/s';
+            if (b < 1048576) return '${(b / 1024).toStringAsFixed(1)} KB/s';
+            return '${(b / 1048576).toStringAsFixed(2)} MB/s';
+          }
+
+          String fmtTotalB(int b) {
+            if (b < 1024) return '$b B';
+            if (b < 1048576) return '${(b / 1024).toStringAsFixed(1)} KB';
+            if (b < 1073741824) return '${(b / 1048576).toStringAsFixed(1)} MB';
+            return '${(b / 1073741824).toStringAsFixed(2)} GB';
+          }
+
+          String coreLogPath() => '${Directory.systemTemp.path}/erfan_core.log';
+
+          /// آخرین بخش لاگ هسته رو نشون می‌ده و اجازه کپی می‌ده
+          Future<void> _showCoreLogDialog(BuildContext context) async {
+            String text;
+            try {
+              final f = File(coreLogPath());
+              if (await f.exists()) {
+                final len = await f.length();
+                final bytes = <int>[];
+                await for (final part in f.openRead(len > 65536 ? len - 65536 : 0)) {
+                  bytes.addAll(part);
+                }
+                final ls = utf8.decode(bytes, allowMalformed: true).split('\n');
+                text = (ls.length > 120 ? ls.sublist(ls.length - 120) : ls).join('\n').trim();
+                if (text.isEmpty) text = tr('(لاگ هسته خالیه)', '(core log is empty)');
+              } else {
+                text = tr('(فایل لاگ هنوز ساخته نشده)', '(no log file yet)');
+              }
+            } catch (e) {
+              text = tr('(خواندن لاگ ممکن نشد)', '(could not read the log)');
+            }
+            String ver = '';
+            String plog = '';
+            try {
+              ver = await coreHandle?.getCoreVersion().timeout(const Duration(seconds: 3)) ?? '';
+            } catch (_) {}
+            try {
+              final ls = await coreHandle?.getLogs().timeout(const Duration(seconds: 4)) ?? <String>[];
+              plog = (ls.length > 80 ? ls.sublist(ls.length - 80) : ls).join('\n');
+            } catch (_) {}
+            text = '== app ==\nCyrus $buildTag\n\n'
+                '${prevSessionEvents.isEmpty ? '' : '== previous session (before last close) ==\n$prevSessionEvents\n\n'}'
+                '== events ==\n${coreEvents.isEmpty ? '(none)' : coreEvents.join('\n')}\n\n'
+                '== config sent (secrets hidden) ==\n${lastSentCfg.isEmpty ? '(none)' : lastSentCfg}\n\n'
+                '== core version ==\n${ver.isEmpty ? '(unknown)' : ver}\n\n'
+                '== plugin logs (logcat) ==\n${plog.isEmpty ? '(empty)' : plog}\n\n'
+                '== core log file ==\n$text';
+            if (!context.mounted) return;
+            await showDialog<void>(
+              context: context,
+              builder: (ctx) => AlertDialog(
+                title: Text(tr('گزارش هسته', 'Core log')),
+                content: SizedBox(
+                  width: double.maxFinite,
+                  child: SingleChildScrollView(
+                    child: SelectableText(text, style: const TextStyle(fontSize: 11, fontFamily: 'monospace')),
+                  ),
+                ),
+                actions: [
+                  TextButton(
+                    onPressed: () {
+                      Clipboard.setData(ClipboardData(text: text));
+                      Navigator.of(ctx).pop();
+                    },
+                    child: Text(tr('کپی', 'Copy')),
+                  ),
+                  TextButton(onPressed: () => Navigator.of(ctx).pop(), child: Text(tr('بستن', 'Close'))),
+                ],
+              ),
+            );
+          }
+
+          class _Ep {
+            final String host;
+            final int port;
+            const _Ep(this.host, this.port);
+          }
+
+          class Cfg {
+            final String link; // لینک کانفیگ یا متن JSON کامل
+            final String? sub; // آدرس ساب (اگه از ساب اومده)
+            Cfg(this.link, this.sub);
+
+            bool get isJson => link.startsWith('{');
+
+            Map<String, dynamic> toJson() => {'l': link, 's': sub};
+            factory Cfg.fromJson(Map<String, dynamic> j) =>
+                Cfg(j['l'] as String, j['s'] as String?);
+          }
+
+          class SubInfo {
+            String name;
+            int used;
+            int total;
+            int expire; // epoch seconds
+            SubInfo({this.name = '', this.used = 0, this.total = 0, this.expire = 0});
+
+            Map<String, dynamic> toJson() =>
+                {'n': name, 'u': used, 't': total, 'e': expire};
+            factory SubInfo.fromJson(Map<String, dynamic> j) => SubInfo(
+                  name: (j['n'] ?? '') as String,
+                  used: (j['u'] ?? 0) as int,
+                  total: (j['t'] ?? 0) as int,
+                  expire: (j['e'] ?? 0) as int,
+                );
+          }
+
+          class CfgGroup {
+            final String? sub;
+            final String title;
+            final List<Cfg> items;
+            CfgGroup(this.sub, this.title, this.items);
+          }
+
+          class SubRow {
+            final String title;
+            final int count;
+            final int used;
+            final int total;
+            final int expire;
+            SubRow(this.title, this.count, this.used, this.total, this.expire);
+          }
+
+          String _gb(int b) => '${(b / 1073741824).toStringAsFixed(1)} GB';
+
+          /// تاریخ انقضا رو به ثانیه برمی‌گردونه؛ ۰ یعنی «نامشخص / بدون انقضا».
+          /// میلی‌ثانیه (>= 1e11) به ثانیه تبدیل می‌شه و مقدار خارج از بازه ۲۰۰۱ تا ۲۱۰۰ نامعتبره.
+          int _normExpire(int v) {
+            if (v <= 0) return 0;
+            if (v >= 100000000000) v = v ~/ 1000;
+            if (v < 978307200 || v > 4102444800) return 0;
+            return v;
+          }
+
+          int? _daysLeft(int expire) {
+            final e = _normExpire(expire);
+            if (e <= 0) return null;
+            final ms = e * 1000 - DateTime.now().millisecondsSinceEpoch;
+            return (ms / 86400000).ceil();
+          }
+
+          // ============================================================
+          //  Home
+          // ============================================================
+
+          class HomePage extends StatefulWidget {
+            const HomePage({super.key});
+
+            @override
+            State<HomePage> createState() => _HomePageState();
+          }
+
+          class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
+            late final V2ray _v2ray;
+            V2RayStatus _status = V2RayStatus();
+
+            int _tab = 0; // 0 خانه، 1 پیکربندی‌ها، 2 تنظیمات
+
+            List<Cfg> _configs = [];
+            List<String> _subs = [];
+            final Map<String, SubInfo> _subInfo = {};
+            final Map<String, int> _pings = {};
+            final Map<String, int> _pingMiss = {}; // پینگ‌های پس‌زمینه‌ی ناموفق پشت‌سرهم
+            final Map<String, int> _strat = {}; // روش اتصالی که برای هر کانفیگ جواب داده
+            final Map<String, int> _stratFail = {};
+            final Map<String, String> _names = {};
+            final Map<String, String> _hosts = {};
+            final Map<String, String> _custom = {};
+            final Set<String> _collapsed = {};
+            final Set<String> _busyPing = {};
+            final Set<String> _busyUpd = {};
+            List<Object> _rows = [];
+            String? _selected;
+            int _sort = 0; // 0 پینگ، 1 نام، 2 پیش‌فرض
+
+            bool _updatingSubs = false;
+            bool _pinging = false;
+            int _pingDone = 0, _pingTotal = 0;
+            bool _foreground = true;
+            bool _firstRound = true;
+            int _failRounds = 0;
+            DateTime _lastSubUpdate = DateTime.fromMillisecondsSinceEpoch(0);
+            Timer? _pingTimer;
+            Timer? _liveTimer;
+            bool _loaded = false;
+            bool _allowEmpty = false;
+            String _loadInfo = '';
+            String _saveInfo = '';
+            http.Client? _live;
+            final Map<String, double> _speeds = {};
+            final Map<String, int> _speedAt = {};
+            bool _picked = false;
+            bool _probing = false;
+            bool _cancelProbe = false;
+            bool _measuring = false;
+            bool _smartBusy = false;
+            String? _activeLink;
+            int _livePing = 0;
+            final List<double> _dlHist = [];
+            final List<double> _ulHist = [];
+            final List<double> _pingHist = [];
+            double _dlMbps = 0;
+            double _ulMbps = 0;
+            double _peakDl = 0;
+            int _lastDl = 0;
+            int _lastUl = 0;
+            final Stopwatch _tick = Stopwatch();
+            final Map<String, double> _ups = {};
+            final List<int> _liveSamples = [];
+            int _liveN = 0;
+            int _liveFails = 0;
+            DateTime _lastFailover = DateTime.fromMillisecondsSinceEpoch(0);
+            int _pingTick = 0;
+            bool _themesOpen = false;
+
+            bool get _connected => _status.state == 'CONNECTED';
+            bool get _connecting => _status.state == 'CONNECTING';
+
+            // هر لینکی به شکل scheme://... که http/https نباشه یک کانفیگ حساب می‌شه
+            // (vless، vmess، trojan، ss، ssh، hysteria2، tuic، wireguard و ...)
+            static final RegExp _linkRe = RegExp(r'^[A-Za-z][A-Za-z0-9+.\-]*://\S');
+            static const _coreSchemes = [
+              'vmess://',
+              'vless://',
+              'trojan://',
+              'ss://',
+              'socks://',
+              'wireguard://',
+            ];
+            bool _isLink(String s) {
+              final l = s.toLowerCase();
+              if (l.startsWith('http://') || l.startsWith('https://')) return false;
+              return _linkRe.hasMatch(s);
+            }
+
+            /// هسته فقط همین پروتکل‌ها رو وصل می‌کنه
+            bool _unsupported(Cfg c) {
+              if (c.isJson) return false;
+              final l = c.link.toLowerCase();
+              return !_coreSchemes.any(l.startsWith);
+            }
+
+            @override
+            void initState() {
+              super.initState();
+              WidgetsBinding.instance.addObserver(this);
+              langPref.addListener(_onLang);
+              themePref.addListener(_onLang);
+              _v2ray = V2ray(onStatusChanged: _onStatus);
+              coreHandle = _v2ray;
+              _init();
+            }
+
+            void _onLang() {
+              if (mounted) setState(() {});
+            }
+
+            @override
+            void dispose() {
+              WidgetsBinding.instance.removeObserver(this);
+              langPref.removeListener(_onLang);
+              themePref.removeListener(_onLang);
+              _pingTimer?.cancel();
+              _liveTimer?.cancel();
+              _live?.close();
+              super.dispose();
+            }
+
+            @override
+            void didChangeAppLifecycleState(AppLifecycleState state) {
+              if (state == AppLifecycleState.resumed) {
+                _foreground = true;
+                // اتصال قبلی گیر کرده بود؛ با برگشت به برنامه آزاد می‌شه
+                if (_retrying &&
+                    !_connected &&
+                    DateTime.now().difference(_connectAt).inSeconds > 45) {
+                  _connSeq++;
+                  _retrying = false;
+                  if (mounted) setState(() {});
+                }
+                final idle = !_connected && !_connecting && !_retrying;
+                if (S.autoUpdate &&
+                    DateTime.now().difference(_lastSubUpdate).inSeconds > 30) {
+                  _updateAllSubs(manual: idle);
+                } else if (idle) {
+                  _pingAll(manual: true, tries: 2);
+                }
+              } else if (state == AppLifecycleState.paused) {
+                _foreground = false;
+                _save();
+                S.save();
+              }
+            }
+
+            // ---------- راه‌اندازی ----------
+
+            Future<void> _init() async {
+              try {
+                await _load();
+              } catch (e) {
+                _toast(tr('خطا در خواندن کانفیگ‌ها: $e', 'Could not read saved configs: $e'));
+              }
+              _loaded = true;
+              try {
+                await _v2ray.initialize();
+              } catch (e) {
+                _v2rayReady = false; // موقع اتصال دوباره امتحان می‌شه
+                _toast('V2Ray: $e');
+              }
+              // دکمه «قطع اتصال» اعلان
+              _notifCh.setMethodCallHandler((call) async {
+                if (call.method == 'disconnect') {
+                  await _userDisconnect();
+                  return true;
+                }
+                return null;
+              });
+              try {
+                final p = await _notifCh.invokeMethod<bool>('pending');
+                if (p == true) {
+                  await _userDisconnect();
+                  try {
+                    await _notifCh.invokeMethod<bool>('moveToBack');
+                  } catch (_) {}
+                }
+              } catch (_) {}
+              // با ورود به برنامه هیچ اتصالی خودکار برقرار نمی‌شه؛ فقط خود کاربر وصل و قطع می‌کنه
+              // پینگ کانفیگ‌های ذخیره‌شده فوراً شروع می‌شه و منتظر دانلود ساب نمی‌مونه
+              final crashed = await _coreCrashCheck();
+              if (crashed) {
+                _toast(tr('دفعه قبل وسط تست یه کانفیگ برنامه بسته شد؛ پینگ خودکار این بار خاموش شد',
+                    'The app closed during a config test last time, so auto ping is skipped this time'));
+              } else {
+                _pingAll(manual: true, tries: 2);
+              }
+              if (_subs.isNotEmpty && S.autoUpdate) {
+                await _updateAllSubs(); // اگه کانفیگ‌ها عوض شده باشن دوباره پینگ می‌گیره
+              }
+
+              _pingTimer = Timer.periodic(const Duration(seconds: 5), (_) {
+                // وقتی وصل هستیم یا داریم وصل می‌شیم پینگ پس‌زمینه نمی‌گیریم تا اتصال لگ نکنه
+                // (پینگ زنده از داخل تونل جدا گرفته می‌شه)
+                unawaited(_reconnectTick());
+                if (!_foreground || _probing || _updatingSubs || _connected || _connecting || _retrying) return;
+                _pingTick++;
+                if (_pingTick % 12 == 0) {
+                  // هر یک دقیقه همه کانفیگ‌ها
+                  _pingAll();
+                } else {
+                  // هر ۵ ثانیه فقط کانفیگ انتخاب‌شده
+                  final a = _byLink(_selected);
+                  if (a != null) _pingConfigs([a]);
+                }
+              });
+              _liveTimer = Timer.periodic(const Duration(seconds: 5), (_) => _liveTick());
+            }
+
+            Future<File?> _backupFile() async {
+              try {
+                final d = await getApplicationSupportDirectory();
+                return File('${d.path}/erfan_backup.json');
+              } catch (_) {
+                return null;
+              }
+            }
+
+            Future<void> _writeBackup() async {
+              try {
+                final f = await _backupFile();
+                if (f == null) return;
+                final data = jsonEncode({
+                  'configs': _configs.map((e) => e.toJson()).toList(),
+                  'subs': _subs,
+                  'selected': _selected,
+                  'custom': _custom,
+                });
+                final tmp = File('${f.path}.tmp');
+                await tmp.writeAsString(data, flush: true);
+                await tmp.rename(f.path);
+              } catch (_) {}
+            }
+
+            Future<Map<String, dynamic>?> _readBackup() async {
+              try {
+                final f = await _backupFile();
+                if (f == null || !await f.exists()) return null;
+                final m = jsonDecode(await f.readAsString());
+                return m is Map ? Map<String, dynamic>.from(m) : null;
+              } catch (_) {
+                return null;
+              }
+            }
+
+            Future<void> _load() async {
+              final p = await SharedPreferences.getInstance();
+              List<Cfg> list = [];
+              final raw = p.getString('configs') ?? p.getString('configs_bak');
+              if (raw != null) {
+                try {
+                  list = (jsonDecode(raw) as List)
+                      .map((e) => Cfg.fromJson(e as Map<String, dynamic>))
+                      .toList();
+                } catch (_) {}
+              }
+              final infoRaw = p.getString('subinfo');
+              if (infoRaw != null) {
+                try {
+                  final m = jsonDecode(infoRaw) as Map<String, dynamic>;
+                  m.forEach((k, v) {
+                    _subInfo[k] = SubInfo.fromJson(Map<String, dynamic>.from(v as Map));
+                  });
+                } catch (_) {}
+              }
+              final spRaw = p.getString('speeds');
+              if (spRaw != null) {
+                try {
+                  final m = jsonDecode(spRaw) as Map<String, dynamic>;
+                  m.forEach((k, v) {
+                    final mm = Map<String, dynamic>.from(v as Map);
+                    _speeds[k] = (mm['s'] as num).toDouble();
+                    final u = mm['u'];
+                    if (u is num && u > 0) _ups[k] = u.toDouble();
+                    _speedAt[k] = (mm['t'] as num).toInt();
+                  });
+                } catch (_) {}
+              }
+              final custRaw = p.getString('custom');
+              if (custRaw != null) {
+                try {
+                  final m = jsonDecode(custRaw) as Map<String, dynamic>;
+                  m.forEach((k, v) => _custom[k] = v.toString());
+                } catch (_) {}
+              }
+              final pgRaw = p.getString('pings');
+              if (pgRaw != null) {
+                try {
+                  final m = jsonDecode(pgRaw) as Map<String, dynamic>;
+                  m.forEach((k, v) {
+                    if (v is num && v > 0) _pings[k] = v.toInt();
+                  });
+                } catch (_) {}
+              }
+              final stRaw = p.getString('strat2');
+              if (stRaw != null) {
+                try {
+                  final m = jsonDecode(stRaw) as Map<String, dynamic>;
+                  m.forEach((k, v) {
+                    if (v is num) _strat[k] = v.toInt();
+                  });
+                } catch (_) {}
+              }
+              String src = 'prefs';
+              List<String> subsList = p.getStringList('subs') ?? [];
+              String? selected = p.getString('selected');
+              if (list.isEmpty) {
+                final b = await _readBackup();
+                if (b != null && b['configs'] is List && (b['configs'] as List).isNotEmpty) {
+                  try {
+                    list = (b['configs'] as List)
+                        .map((e) => Cfg.fromJson(Map<String, dynamic>.from(e as Map)))
+                        .toList();
+                    subsList = List<String>.from((b['subs'] as List?) ?? const []);
+                    selected = b['selected'] as String?;
+                    if (b['custom'] is Map) {
+                      (b['custom'] as Map).forEach((k, v) => _custom[k.toString()] = v.toString());
+                    }
+                    src = 'file';
+                  } catch (_) {}
+                } else {
+                  src = 'none';
+                }
+              }
+              _loadInfo = '${list.length} • $src';
+              if (!mounted) return;
+              setState(() {
+                _configs = list;
+                _subs = subsList;
+                _selected = selected;
+                _sort = p.getInt('sort2') ?? 0;
+           _picked = p.getBool('picked') ?? false;
+                _resort();
+              });
+            }
+
+            Future<void> _save() async {
+              if (!_loaded) return;
+              final p = await SharedPreferences.getInstance();
+              // لیست خالی فقط وقتی ذخیره می‌شه که خود کاربر حذف کرده باشه
+              if (_configs.isNotEmpty || _allowEmpty) {
+                _saveInfo = '${_configs.length} • ${DateTime.now().toString().substring(11, 19)}';
+                await _writeBackup();
+                final cj = jsonEncode(_configs.map((e) => e.toJson()).toList());
+                await p.setString('configs', cj);
+                await p.setString('configs_bak', cj);
+              }
+              await p.setStringList('subs', _subs);
+              await p.setString('subinfo',
+                  jsonEncode(_subInfo.map((k, v) => MapEntry(k, v.toJson()))));
+              await p.setString('custom', jsonEncode(_custom));
+              await p.setString('strat2', jsonEncode(_strat));
+              await p.setString('pings', jsonEncode({
+                for (final e in _pings.entries)
+                  if (e.value > 0) e.key: e.value
+              }));
+              await p.setInt('sort2', _sort);
+              await p.setBool('picked', _picked);
+              await p.setString(
+                  'speeds',
+                  jsonEncode({
+                    for (final e in _speeds.entries)
+                      e.key: {'s': e.value, 't': _speedAt[e.key] ?? 0, 'u': _ups[e.key] ?? 0}
+                  }));
+              if (_selected != null) {
+                await p.setString('selected', _selected!);
+              } else {
+                await p.remove('selected');
+              }
+            }
+
+            void _toast(String msg) {
+              if (!mounted) return;
+              ScaffoldMessenger.of(context)
+                ..hideCurrentSnackBar()
+                ..showSnackBar(SnackBar(content: Text(msg)));
+            }
+
+            // ---------- کمک‌ها ----------
+
+            String _nameOf(Cfg c) {
+              final cu = _custom[c.link];
+              if (cu != null && cu.isNotEmpty) return cu;
+              return _names.putIfAbsent(c.link, () {
+                if (c.isJson) {
+                  try {
+                    final j = jsonDecode(c.link);
+                    if (j is Map && j['remarks'] != null) return j['remarks'].toString();
+                  } catch (_) {}
+                  return 'JSON';
+                }
+                if (c.link.toLowerCase().startsWith('wireguard://')) {
+                  final h = c.link.indexOf('#');
+                  if (h >= 0 && h < c.link.length - 1) {
+                    try {
+                      return Uri.decodeComponent(c.link.substring(h + 1));
+                    } catch (_) {}
+                  }
+                  return 'WireGuard';
+                }
+                try {
+                  final r = V2ray.parseFromURL(c.link).remark;
+                  return r.isEmpty ? '—' : r;
+                } catch (_) {
+                  final h = c.link.indexOf('#');
+                  if (h >= 0 && h < c.link.length - 1) {
+                    try {
+                      return Uri.decodeComponent(c.link.substring(h + 1));
+                    } catch (_) {}
+                  }
+                  return '—';
+                }
+              });
+            }
+
+            String _rawHost(Cfg c) {
+              try {
+                if (c.isJson) {
+                  final j = jsonDecode(c.link);
+                  if (j is Map) {
+                    final ob = j['outbounds'];
+                    if (ob is List && ob.isNotEmpty) {
+                      final s = ob[0]['settings'];
+                      if (s is Map) {
+                        final v = s['vnext'];
+                        if (v is List && v.isNotEmpty) {
+                          return (v[0]['address'] ?? '').toString();
+                        }
+                        final sv = s['servers'];
+                        if (sv is List && sv.isNotEmpty) {
+                          return (sv[0]['address'] ?? '').toString();
+                        }
+                        final pe = s['peers'];
+                        if (pe is List && pe.isNotEmpty) {
+                          final ep = (pe[0]['endpoint'] ?? '').toString();
+                          if (ep.startsWith('[')) {
+                            final e = ep.indexOf(']');
+                            return e > 1 ? ep.substring(1, e) : '';
+                          }
+                          final i = ep.lastIndexOf(':');
+                          return i > 0 ? ep.substring(0, i) : ep;
+                        }
+                      }
+                    }
+                  }
+                  return '';
+                }
+                if (c.link.startsWith('vmess://')) {
+                  final raw = c.link.substring(8).split('#').first;
+                  final j = jsonDecode(utf8.decode(base64.decode(base64.normalize(raw))));
+                  return (j['add'] ?? '').toString();
+                }
+                if (c.link.startsWith('ss://')) {
+                  final u = Uri.tryParse(c.link);
+                  if (u != null && u.host.isNotEmpty) return u.host;
+                  final body = c.link.substring(5).split('#').first;
+                  final dec = utf8.decode(base64.decode(base64.normalize(body)));
+                  final at = dec.lastIndexOf('@');
+                  if (at >= 0) return dec.substring(at + 1).split(':').first;
+                  return '';
+                }
+                return Uri.tryParse(c.link)?.host ?? '';
+              } catch (_) {
+                return '';
+              }
+            }
+
+            String _hostOf(Cfg c) => _hosts.putIfAbsent(c.link, () {
+                  final h = _rawHost(c);
+                  if (h.length <= 8) return h;
+                  return '${h.substring(0, 4)}****${h.substring(h.length - 4)}';
+                });
+
+            String _fullConfig(Cfg c) {
+              if (c.isJson) return c.link;
+              if (c.link.toLowerCase().startsWith('wireguard://')) {
+                final m = _wgFromLink(c.link);
+                if (m == null) throw const FormatException('invalid wireguard link');
+                return jsonEncode(m);
+              }
+              return V2ray.parseFromURL(c.link).getFullConfiguration();
+            }
+
+            // ---------- WireGuard ----------
+
+            /// کانفیگ کامل xray با خروجی wireguard (ورودی‌ها مثل بقیه کانفیگ‌ها socks:10808 و http:10809)
+            Map<String, dynamic> _wgConfig({
+              required String secretKey,
+              required List<String> address,
+              required List<Map<String, dynamic>> peers,
+              int? mtu,
+              List<int>? reserved,
+              List<String>? dns,
+              String remark = 'WireGuard',
+            }) {
+              Map<String, dynamic> sniff() => {
+                    'enabled': true,
+                    'destOverride': ['http', 'tls'],
+                    'routeOnly': false,
+                  };
+              return {
+                'remarks': remark,
+                'log': {'loglevel': 'warning'},
+                'inbounds': [
+                  {
+                    'tag': 'socks',
+                    'port': 10808,
+                    'listen': '127.0.0.1',
+                    'protocol': 'socks',
+                    'sniffing': sniff(),
+                    'settings': {'auth': 'noauth', 'udp': true, 'allowTransparent': false},
+                  },
+                  {
+                    'tag': 'http',
+                    'port': 10809,
+                    'listen': '127.0.0.1',
+                    'protocol': 'http',
+                    'sniffing': sniff(),
+                    'settings': {'auth': 'noauth', 'udp': false, 'allowTransparent': false},
+                  },
+                ],
+                'outbounds': [
+                  {
+                    'tag': 'proxy',
+                    'protocol': 'wireguard',
+                    'settings': {
+                      'secretKey': secretKey,
+                      'address': address,
+                      'peers': [
+                        for (final p in peers)
+                          {
+                            'allowedIPs': ['0.0.0.0/0', '::/0'],
+                            'keepAlive': 15, // بدون keepalive، NAT شبکه موبایل بعد از مدتی بی‌کاری اتصال رو می‌بنده
+                            ...p,
+                          }
+                      ],
+                      'mtu': mtu ?? 1280,
+                      if (reserved != null && reserved.length == 3) 'reserved': reserved,
+                    },
+                  },
+                  {'tag': 'direct', 'protocol': 'freedom', 'settings': {}},
+                  {'tag': 'block', 'protocol': 'blackhole', 'settings': {}},
+                ],
+                'dns': {
+                  'servers': [
+                    ...?dns,
+                    if (!(dns ?? const []).contains('1.1.1.1')) '1.1.1.1',
+                    if (!(dns ?? const []).contains('8.8.8.8')) '8.8.8.8',
+                  ]
+                },
+                'routing': {'domainStrategy': 'IPIfNonMatch', 'rules': []},
+              };
+            }
+
+            List<int>? _wgReserved(String? v) {
+              if (v == null || v.trim().isEmpty) return null;
+              final p = v.split(RegExp(r'[,\s]+')).where((e) => e.isNotEmpty).toList();
+              if (p.length != 3) return null;
+              final r = p.map(int.tryParse).toList();
+              if (r.any((e) => e == null || e < 0 || e > 255)) return null;
+              return r.cast<int>();
+            }
+
+            String _wgEndpoint(String host, int port) =>
+                host.contains(':') ? '[$host]:$port' : '$host:$port';
+
+            /// wireguard://PRIVATEKEY@host:port?address=..&publickey=..&mtu=..&reserved=1,2,3#name
+            Map<String, dynamic>? _wgFromLink(String link) {
+              try {
+                final u = Uri.parse(link.trim());
+                // در base64 علامت + ممکنه در آدرس به فاصله تبدیل شده باشه
+                String fix(String? v) => (v ?? '').trim().replaceAll(' ', '+');
+                final q = <String, String>{
+                  for (final e in u.queryParameters.entries) e.key.toLowerCase(): e.value,
+                };
+                final secret = fix(Uri.decodeComponent(u.userInfo));
+                final pub = fix(q['publickey']);
+                final host = u.host;
+                if (secret.isEmpty || pub.isEmpty || host.isEmpty) return null;
+                final addr = (q['address'] ?? q['ip'] ?? '')
+                    .split(',')
+                    .map((e) => e.trim())
+                    .where((e) => e.isNotEmpty)
+                    .toList();
+                if (addr.isEmpty) return null;
+                final psk = fix(q['presharedkey'] ?? q['psk']);
+                final ka = int.tryParse(q['keepalive'] ?? q['persistentkeepalive'] ?? '');
+                String remark = 'WireGuard';
+                if (u.fragment.isNotEmpty) {
+                  try {
+                    remark = Uri.decodeComponent(u.fragment);
+                  } catch (_) {}
+                }
+                return _wgConfig(
+                  secretKey: secret,
+                  address: addr,
+                  peers: [
+                    {
+                      'publicKey': pub,
+                      if (psk.isNotEmpty) 'preSharedKey': psk,
+                      'endpoint': _wgEndpoint(host, u.hasPort ? u.port : 51820),
+                      if (ka != null) 'keepAlive': ka,
+                    }
+                  ],
+                  mtu: int.tryParse(q['mtu'] ?? ''),
+                  reserved: _wgReserved(q['reserved']),
+                  remark: remark,
+                );
+              } catch (_) {
+                return null;
+              }
+            }
+
+            bool _looksLikeWgConf(String t) =>
+                RegExp(r'^\s*\[Interface\]', caseSensitive: false, multiLine: true).hasMatch(t) &&
+                RegExp(r'^\s*\[Peer\]', caseSensitive: false, multiLine: true).hasMatch(t);
+
+            /// فایل/متن استاندارد WireGuard (.conf) با بخش‌های [Interface] و [Peer]
+            Map<String, dynamic>? _wgFromConf(String text) {
+              try {
+                String sec = '';
+                String remark = '';
+                final iface = <String, String>{};
+                final peers = <Map<String, String>>[];
+                for (final raw in text.split(RegExp(r'\r?\n'))) {
+                  final line = raw.trim();
+                  if (line.isEmpty) continue;
+                  if (line.startsWith('#') || line.startsWith(';')) {
+                    final cm = line.substring(1).trim();
+                    if (remark.isEmpty && cm.isNotEmpty && cm.length <= 40) remark = cm;
+                    continue;
+                  }
+                  if (line.startsWith('[')) {
+                    sec = line.toLowerCase();
+                    if (sec == '[peer]') peers.add(<String, String>{});
+                    continue;
+                  }
+                  final i = line.indexOf('=');
+                  if (i <= 0) continue;
+                  final k = line.substring(0, i).trim().toLowerCase();
+                  final v = line.substring(i + 1).trim();
+                  if (sec == '[interface]') {
+                    iface[k] = v;
+                  } else if (sec == '[peer]' && peers.isNotEmpty) {
+                    peers.last[k] = v;
+                  }
+                }
+                final secret = iface['privatekey'] ?? '';
+                final addr = (iface['address'] ?? '')
+                    .split(',')
+                    .map((e) => e.trim())
+                    .where((e) => e.isNotEmpty)
+                    .toList();
+                if (secret.isEmpty || addr.isEmpty || peers.isEmpty) return null;
+                final outPeers = <Map<String, dynamic>>[];
+                for (final p in peers) {
+                  final pub = p['publickey'] ?? '';
+                  final ep = p['endpoint'] ?? '';
+                  if (pub.isEmpty || ep.isEmpty) continue;
+                  final ka = int.tryParse(p['persistentkeepalive'] ?? '');
+                  final psk = p['presharedkey'] ?? '';
+                  outPeers.add({
+                    'publicKey': pub,
+                    if (psk.isNotEmpty) 'preSharedKey': psk,
+                    'endpoint': ep,
+                    if (ka != null && ka > 0) 'keepAlive': ka,
+                  });
+                }
+                if (outPeers.isEmpty) return null;
+                if (remark.isEmpty) {
+                  final ep = outPeers.first['endpoint'].toString();
+                  remark = 'WG ${ep.split(':').first.replaceAll('[', '')}';
+                }
+                return _wgConfig(
+                  secretKey: secret,
+                  address: addr,
+                  peers: outPeers,
+                  mtu: int.tryParse(iface['mtu'] ?? ''),
+                  reserved: _wgReserved(iface['reserved'] ?? peers.first['reserved']),
+                  dns: (iface['dns'] ?? '')
+                      .split(',')
+                      .map((e) => e.trim())
+                      .where((e) => InternetAddress.tryParse(e) != null)
+                      .toList(),
+                  remark: remark,
+                );
+              } catch (_) {
+                return null;
+              }
+            }
+
+            /// کانفیگ نهایی؛ اگه تنظیمات DNS و مسیر دست‌نخورده باشن، کانفیگ اصلی برمی‌گرده.
+            String _buildConfig(Cfg c, {int? strat}) {
+              final base = _fullConfig(c);
+              final st = strat ?? _strat[c.link] ?? (S.fragment ? 2 : 0);
+              final needsDns = !c.isJson && S.dnsPreset != 'default';
+              final needsRoute = S.domainStrategy != 'default' ||
+                  S.bypassIr ||
+                  S.directDomains.trim().isNotEmpty ||
+                  S.blockDomains.trim().isNotEmpty;
+              if (!needsDns && !needsRoute && !S.perf && st == 0) return base;
+              try {
+                final decoded = jsonDecode(base);
+                if (decoded is! Map) return base;
+                final m = Map<String, dynamic>.from(decoded);
+                try {
+                  _tune(m, st);
+                } catch (_) {}
+                if (needsDns) {
+                  final servers = S.dnsServers();
+                  if (servers.isNotEmpty) {
+                    m['dns'] = {'servers': servers, if (S.perf) 'queryStrategy': 'UseIPv4'};
+                  }
+                }
+                if (needsRoute) {
+                  final outs = (m['outbounds'] is List)
+                      ? List<dynamic>.from(m['outbounds'] as List)
+                      : <dynamic>[];
+                  bool hasTag(String t) => outs.any((o) => o is Map && o['tag'] == t);
+                  final routing = (m['routing'] is Map)
+                      ? Map<String, dynamic>.from(m['routing'] as Map)
+                      : <String, dynamic>{};
+                  final rules = (routing['rules'] is List)
+                      ? List<dynamic>.from(routing['rules'] as List)
+                      : <dynamic>[];
+                  final front = <dynamic>[];
+                  final direct = <String>[
+                    ...S.listOf(S.directDomains).map((d) => 'domain:$d'),
+                    if (S.bypassIr) 'domain:ir',
+                  ];
+                  final block = S.listOf(S.blockDomains).map((d) => 'domain:$d').toList();
+                  if (direct.isNotEmpty) {
+                    if (!hasTag('direct')) {
+                      outs.add({'protocol': 'freedom', 'tag': 'direct', 'settings': {}});
+                    }
+                    front.add(
+                        {'type': 'field', 'domain': direct, 'outboundTag': 'direct'});
+                  }
+                  if (block.isNotEmpty) {
+                    if (!hasTag('block')) {
+                      outs.add({'protocol': 'blackhole', 'tag': 'block', 'settings': {}});
+                    }
+                    front
+                        .add({'type': 'field', 'domain': block, 'outboundTag': 'block'});
+                  }
+                  routing['rules'] = [...front, ...rules];
+                  if (S.domainStrategy != 'default') {
+                    routing['domainStrategy'] = S.domainStrategy;
+                  }
+                  m['routing'] = routing;
+                  m['outbounds'] = outs;
+                }
+                return jsonEncode(m);
+              } catch (_) {
+                return base;
+              }
+            }
+
+              /// تنظیمات بهترین عملکرد برای نت ضعیف و کانفیگ‌های ضعیف
+            void _tune(Map<String, dynamic> m, int strat) {
+              const proxies = ['vmess', 'vless', 'trojan', 'shadowsocks'];
+              final outsRaw = m['outbounds'];
+              if (outsRaw is! List) return;
+              final outs = List<dynamic>.from(outsRaw);
+
+              if (S.perf) {
+                // زمان‌بندی‌ها: اتصال کند زود رها نشه، اتصال مرده زود پاک بشه
+                final policy = (m['policy'] is Map)
+                    ? Map<String, dynamic>.from(m['policy'] as Map)
+                    : <String, dynamic>{};
+                final levels = (policy['levels'] is Map)
+                    ? Map<String, dynamic>.from(policy['levels'] as Map)
+                    : <String, dynamic>{};
+                final l0 = (levels['0'] is Map)
+                    ? Map<String, dynamic>.from(levels['0'] as Map)
+                    : <String, dynamic>{};
+                l0['handshake'] = 10;
+                l0['connIdle'] = 300;
+                l0['uplinkOnly'] = 2;
+                l0['downlinkOnly'] = 5;
+                levels['0'] = l0;
+                policy['levels'] = levels;
+                m['policy'] = policy;
+                final dnsRaw = m['dns'];
+                if (dnsRaw is Map && dnsRaw['queryStrategy'] == null) {
+                  m['dns'] = {...Map<String, dynamic>.from(dnsRaw), 'queryStrategy': 'UseIPv4'};
+                }
+              }
+
+              for (int i = 0; i < outs.length; i++) {
+                final o = outs[i];
+                if (o is! Map) continue;
+                final proto = (o['protocol'] ?? '').toString();
+                if (!proxies.contains(proto)) continue;
+                final om = Map<String, dynamic>.from(o);
+                final ss = (om['streamSettings'] is Map)
+                    ? Map<String, dynamic>.from(om['streamSettings'] as Map)
+                    : <String, dynamic>{};
+                final net = (ss['network'] ?? 'tcp').toString();
+                final sec = (ss['security'] ?? 'none').toString();
+                final sock = (ss['sockopt'] is Map)
+                    ? Map<String, dynamic>.from(ss['sockopt'] as Map)
+                    : <String, dynamic>{};
+
+                final fragOk = (strat == 2 || strat == 3) &&
+                    sec == 'tls' &&
+                    (net == 'tcp' || net == 'ws' || net == 'grpc' || net == 'httpupgrade') &&
+                    sock['dialerProxy'] == null;
+
+                if (strat >= 1) sock['domainStrategy'] ??= 'UseIPv4';
+                if (S.perf) {
+                  sock['tcpKeepAliveIdle'] ??= 30;
+                  sock['tcpKeepAliveInterval'] ??= 15;
+                  sock['tcpNoDelay'] ??= true;
+                }
+
+                if (fragOk) {
+                  sock['dialerProxy'] = 'fragment';
+                  if (!outs.any((e) => e is Map && e['tag'] == 'fragment')) {
+                    outs.add({
+                      'tag': 'fragment',
+                      'protocol': 'freedom',
+                      'settings': {
+                        'fragment': {
+                          'packets': 'tlshello',
+                          'length': strat == 3 ? '10-30' : '100-200',
+                          'interval': '10-20',
+                        },
+                      },
+                      'streamSettings': {
+                        'sockopt': {'tcpNoDelay': true},
+                      },
+                    });
+                  }
+                }
+
+                if (sock.isNotEmpty) ss['sockopt'] = sock;
+                if (ss.isNotEmpty) om['streamSettings'] = ss;
+                outs[i] = om;
+              }
+              m['outbounds'] = outs;
+            }
+
+            Cfg? _byLink(String? link) {
+              if (link == null) return null;
+              for (final c in _configs) {
+                if (c.link == link) return c;
+              }
+              return null;
+            }
+
+            String _subTitle(String url) {
+              final n = _subInfo[url]?.name ?? '';
+              if (n.isNotEmpty) return n;
+              return Uri.tryParse(url)?.host ?? url;
+            }
+
+            /// مرتب‌سازی و ساخت ردیف‌های لیست (فقط آخر هر دور پینگ و موقع تغییر لیست)
+            void _resort() {
+              try {
+                _resortImpl();
+              } catch (_) {
+                _rows = [
+                  CfgGroup(null, 'Local', _configs.where((c) => c.sub == null).toList()),
+                  for (final s in _subs)
+                    CfgGroup(s, _subTitle(s), _configs.where((c) => c.sub == s).toList()),
+                ];
+              }
+            }
+
+            void _resortImpl() {
+              // وایرگارد هیچ پینگی ندارد؛ پینگ‌های قدیمی ذخیره‌شده‌اش هم پاک می‌شود
+              for (final c in _configs) {
+                if (_isWg(c)) _pings.remove(c.link);
+              }
+              final idx = <String, int>{
+                for (int i = 0; i < _configs.length; i++) _configs[i].link: i,
+              };
+              int rank(Cfg c) {
+                if (_isWg(c)) return 1;
+                final p = _pings[c.link];
+                if (p == null) return 1;
+                if (p < 0) return 2;
+                return 0;
+              }
+
+              int cmp(Cfg a, Cfg b) {
+                if (_sort == 3) return idx[a.link]!.compareTo(idx[b.link]!);
+                if (_sort == 2) {
+                  final d = _nameOf(a).toLowerCase().compareTo(_nameOf(b).toLowerCase());
+                  if (d != 0) return d;
+                  return idx[a.link]!.compareTo(idx[b.link]!);
+                }
+                final ra = rank(a), rb = rank(b);
+                if (ra != rb) return ra - rb;
+                if (ra == 1) {
+                  // بدون پینگ (از جمله وایرگارد): فقط بر اساس سرعت
+                  final sd = (_speeds[b.link] ?? 0).compareTo(_speeds[a.link] ?? 0);
+                  if (sd != 0) return sd;
+                }
+                if (ra == 0) {
+                  final d = _sort == 0
+                      ? _cmpBest(a, b)
+                      : _pings[a.link]!.compareTo(_pings[b.link]!);
+                  if (d != 0) return d;
+                }
+                return idx[a.link]!.compareTo(idx[b.link]!);
+              }
+
+              final rows = <Object>[];
+              final local = _configs.where((c) => c.sub == null).toList()..sort(cmp);
+              rows.add(CfgGroup(null, 'Local', local));
+              if (!_collapsed.contains('')) rows.addAll(local);
+              for (final s in _subs) {
+                final items = _configs.where((c) => c.sub == s).toList()..sort(cmp);
+                rows.add(CfgGroup(s, _subTitle(s), items));
+                if (!_collapsed.contains(s)) rows.addAll(items);
+              }
+              _rows = rows;
+            }
+
+            String? _bestLink() {
+              Cfg? best;
+              for (final c in _configs) {
+                final p = _pings[c.link];
+                if (p == null || p <= 0) continue;
+                if (best == null || _cmpBest(c, best) < 0) best = c;
+              }
+              return best?.link;
+            }
+
+            // ---------- افزودن ----------
+
+            /// نویسه‌های نامرئی و فاصله‌های اضافه رو پاک می‌کنه
+            String _cleanInput(String s) =>
+                s.replaceAll(RegExp('[\u200B-\u200F\u2028-\u202F\uFEFF]'), '').trim();
+
+            /// متن base64 (معمولی یا url-safe) رو اگه داخلش کانفیگ بود باز می‌کنه
+            String? _tryBase64(String t) {
+              final c = t.replaceAll(RegExp(r'\s+'), '');
+              if (c.length < 16 || !RegExp(r'^[A-Za-z0-9+/_\-]+=*$').hasMatch(c)) return null;
+              try {
+                final n = base64.normalize(c.replaceAll('-', '+').replaceAll('_', '/'));
+                final d = utf8.decode(base64.decode(n)).trim();
+                if (d.contains('://') || d.startsWith('{') || _looksLikeWgConf(d)) return d;
+              } catch (_) {}
+              return null;
+            }
+
+            /// هر نوع ورودی (QR، کلیپ‌بورد، فایل): لینک، چند لینک، JSON، آرایه JSON،
+            /// فایل WireGuard، لینک ساب، base64 و لینک‌های اشتراک‌گذاری برنامه‌ها
+            Future<void> _handleInput(String input, {int depth = 0}) async {
+              var text = _cleanInput(input);
+              if (text.isEmpty) return _toast(tr('چیزی پیدا نشد', 'Nothing found'));
+
+              // متنی که URL-encode شده
+              if (!text.contains('://') && text.contains('%3A%2F%2F')) {
+                try {
+                  text = Uri.decodeFull(text).trim();
+                } catch (_) {}
+              }
+
+              // لینک اشتراک‌گذاری برنامه‌ها: v2rayng://install-config?url=https://...
+              if (!text.startsWith('{') && !text.startsWith('[')) {
+                final u = Uri.tryParse(text.split(RegExp(r'\s')).first);
+                if (u != null && u.hasScheme && !_coreSchemes.any((x) => text.toLowerCase().startsWith(x))) {
+                  final low = u.scheme.toLowerCase();
+                  final q = u.queryParameters['url'];
+                  if (low != 'http' && low != 'https' && q != null && q.toLowerCase().startsWith('http')) {
+                    return _handleInput(q, depth: depth + 1);
+                  }
+                }
+              }
+
+              if (text.startsWith('{')) {
+                try {
+                  final j = jsonDecode(text);
+                  if (j is Map && j['outbounds'] is List) {
+                    _addManual([text]);
+                  } else {
+                    _toast(tr('این JSON کانفیگ Xray نیست (outbounds نداره)',
+                        'This JSON is not an Xray config (no outbounds)'));
+                  }
+                } catch (_) {
+                  _toast(tr('JSON معتبر نیست', 'Invalid JSON'));
+                }
+                return;
+              }
+
+              if (_looksLikeWgConf(text)) {
+                final m = _wgFromConf(text);
+                if (m == null) {
+                  _toast(tr('کانفیگ WireGuard ناقصه (کلید، آدرس یا Endpoint نیست)',
+                      'Incomplete WireGuard config (key, address or endpoint missing)'));
+                } else {
+                  _addManual([jsonEncode(m)]);
+                }
+                return;
+              }
+
+              // آرایه‌ای از کانفیگ‌های JSON
+              if (text.startsWith('[')) {
+                try {
+                  final j = jsonDecode(text);
+                  if (j is List) {
+                    final items = <String>[];
+                    for (final e in j) {
+                      if (e is Map && e['outbounds'] is List) items.add(jsonEncode(e));
+                      if (e is String && _isLink(e)) items.add(e.trim());
+                    }
+                    if (items.isNotEmpty) {
+                      _addManual(items);
+                      return;
+                    }
+                  }
+                } catch (_) {}
+              }
+
+              final links = text.split(RegExp(r'[\r\n\s]+')).where(_isLink).toList();
+              if (links.isNotEmpty) {
+                _addManual(links);
+                return;
+              }
+
+              if (text.startsWith('http://') || text.startsWith('https://')) {
+                if (!_subs.contains(text)) _subs.add(text);
+                await _save();
+                await _updateOneSub(text);
+                return;
+              }
+
+              // متن base64 که داخلش کانفیگ یا لیست کانفیگ‌هاست
+              if (depth < 2) {
+                final d = _tryBase64(text);
+                if (d != null && d != text) return _handleInput(d, depth: depth + 1);
+              }
+              _toast(tr('کانفیگ یا ساب معتبر نیست', 'Not a valid config or subscription'));
+            }
+
+            void _addManual(List<String> links) {
+              int added = 0;
+              final fresh = <Cfg>[];
+              for (final l in links) {
+                if (!_configs.any((c) => c.link == l)) {
+                  final nc = Cfg(l, null);
+                  _configs.add(nc);
+                  fresh.add(nc);
+                  added++;
+                }
+              }
+              _selected ??= _configs.isNotEmpty ? _configs.first.link : null;
+              _resort();
+              setState(() {});
+              _save();
+              _toast(tr('$added کانفیگ اضافه شد', '$added config(s) added'));
+              if (fresh.isNotEmpty) _pingConfigs(fresh, manual: true, tries: 2);
+            }
+
+            Future<void> _fromClipboard() async {
+              final d = await Clipboard.getData('text/plain');
+              await _handleInput(d?.text ?? '');
+            }
+
+            PopupMenuItem<String> _plusItem(String v, IconData icon, String label) =>
+                PopupMenuItem<String>(
+                  value: v,
+                  child: Row(
+                    children: [
+                      Icon(icon, size: 24),
+                      const SizedBox(width: 14),
+                      Expanded(child: Text(label)),
+                    ],
+                  ),
+                );
+
+            Future<void> _fromClipboardUri() async {
+              final d = await Clipboard.getData('text/plain');
+              final t = (d?.text ?? '').trim();
+              if (!t.split(RegExp(r'[\r\n\s]+')).any(_isLink)) {
+                return _toast(tr('در کلیپ‌بورد لینک کانفیگ پیدا نشد',
+                    'No config link found in the clipboard'));
+              }
+              await _handleInput(t);
+            }
+
+            Future<void> _fromClipboardJson() async {
+              final d = await Clipboard.getData('text/plain');
+              final t = (d?.text ?? '').trim();
+              if (!t.startsWith('{')) {
+                return _toast(tr('در کلیپ‌بورد JSON پیدا نشد', 'No JSON found in the clipboard'));
+              }
+              await _handleInput(t);
+            }
+
+            /// فایل Cyrus VPN: هر فایلی که داخلش لینک کانفیگ، JSON یا لینک ساب باشه
+            Future<void> _importFile() async {
+              try {
+                final r = await FilePicker.platform.pickFiles(type: FileType.any, withData: true);
+                if (r == null || r.files.isEmpty) return;
+                final f = r.files.first;
+                Uint8List? bytes = f.bytes;
+                if (bytes == null && f.path != null) bytes = await File(f.path!).readAsBytes();
+                if (bytes == null) {
+                  return _toast(tr('فایل خوانده نشد', 'Could not read the file'));
+                }
+                if (bytes.length > 5 * 1024 * 1024) {
+                  return _toast(tr('فایل خیلی بزرگه', 'The file is too large'));
+                }
+                var text = utf8.decode(bytes, allowMalformed: true).trim();
+                if (text.startsWith('\uFEFF')) text = text.substring(1).trim();
+                // بعضی فایل‌ها کل محتوا رو base64 ذخیره می‌کنن
+                if (text.isNotEmpty && !text.contains('://') && !text.startsWith('{')) {
+                  try {
+                    text = utf8.decode(base64.decode(base64.normalize(text))).trim();
+                  } catch (_) {}
+                }
+                final parts = text.split(RegExp(r'[\r\n\s]+')).where((e) => e.isNotEmpty).toList();
+                if (!text.startsWith('{') &&
+                    !parts.any(_isLink) &&
+                    parts.any((e) => e.startsWith('http://') || e.startsWith('https://'))) {
+                  for (final p in parts.where((e) => e.startsWith('http://') || e.startsWith('https://'))) {
+                    await _handleInput(p);
+                  }
+                  return;
+                }
+                await _handleInput(text);
+              } catch (e) {
+                _toast(tr('خواندن فایل ناموفق بود: $e', 'Could not read the file: $e'));
+              }
+            }
+
+            Future<void> _addSubDialog() async {
+              final ctrl = TextEditingController();
+              final text = await showDialog<String>(
+                context: context,
+                builder: (ctx) => AlertDialog(
+                  title: Text(tr('افزودن ساب', 'Add subscription')),
+                  content: TextField(
+                    controller: ctrl,
+                    textDirection: TextDirection.ltr,
+                    decoration: const InputDecoration(hintText: 'https://...'),
+                  ),
+                  actions: [
+                    TextButton(
+                        onPressed: () => Navigator.pop(ctx), child: Text(tr('انصراف', 'Cancel'))),
+                    FilledButton(
+                        onPressed: () => Navigator.pop(ctx, ctrl.text),
+                        child: Text(tr('افزودن', 'Add'))),
+                  ],
+                ),
+              );
+              if (text == null) return;
+              final t = text.trim();
+              if (!(t.startsWith('http://') || t.startsWith('https://'))) {
+                return _toast(tr('لینک ساب معتبر نیست', 'Not a valid subscription link'));
+              }
+              await _handleInput(t);
+            }
+
+            Future<void> _scanQr() async {
+              final result = await Navigator.of(context).push<String>(
+                MaterialPageRoute(builder: (_) => const QrScanPage()),
+              );
+              if (result != null) await _handleInput(result);
+            }
+
+            Future<void> _manualInputDialog() async {
+              final ctrl = TextEditingController();
+              final text = await showDialog<String>(
+                context: context,
+                builder: (ctx) => AlertDialog(
+                  title: Text(tr('افزودن کانفیگ', 'Add config')),
+                  content: TextField(
+                    controller: ctrl,
+                    maxLines: 6,
+                    minLines: 3,
+                    textDirection: TextDirection.ltr,
+                    decoration: InputDecoration(
+                        hintText: tr('لینک کانفیگ از هر نوع (vless، vmess، ssh و ...) یا JSON',
+                            'Config link of any type (vless, vmess, ssh, ...) or JSON')),
+                  ),
+                  actions: [
+                    TextButton(
+                        onPressed: () => Navigator.pop(ctx),
+                        child: Text(tr('انصراف', 'Cancel'))),
+                    FilledButton(
+                        onPressed: () => Navigator.pop(ctx, ctrl.text),
+                        child: Text(tr('افزودن', 'Add'))),
+                  ],
+                ),
+              );
+              if (text != null) await _handleInput(text);
+            }
+
+            // ---------- ساب ----------
+
+            void _parseSubHeaders(String url, Map<String, String> h) {
+              final info = _subInfo[url] ?? SubInfo();
+              final title = h['profile-title'];
+              if (title != null && title.isNotEmpty) {
+                var t = title;
+                if (t.startsWith('base64:')) {
+                  try {
+                    t = utf8.decode(base64.decode(base64.normalize(t.substring(7))));
+                  } catch (_) {}
+                }
+                info.name = t;
+              }
+              final ui0 = h['subscription-userinfo'];
+              if (ui0 != null && ui0.trim().isNotEmpty) {
+                int? up, down, total, exp;
+                for (final part in ui0.split(';')) {
+                  final i = part.indexOf('=');
+                  if (i <= 0) continue;
+                  final k = part.substring(0, i).trim().toLowerCase();
+                  final raw = part.substring(i + 1).trim();
+                  int? v = int.tryParse(raw);
+                  if (v == null) {
+                    final d = double.tryParse(raw);
+                    if (d != null && d.isFinite) v = d.toInt();
+                  }
+                  if (v == null || v < 0) continue; // مقدار خراب نادیده گرفته می‌شه، صفر فرض نمی‌شه
+                  switch (k) {
+                    case 'upload':
+                      up = v;
+                    case 'download':
+                      down = v;
+                    case 'total':
+                      total = v;
+                    case 'expire':
+                      exp = v;
+                  }
+                }
+                if (up != null || down != null) info.used = (up ?? 0) + (down ?? 0);
+                if (total != null) info.total = total;
+                if (exp != null) info.expire = _normExpire(exp);
+              }
+              _subInfo[url] = info;
+            }
+
+            Future<bool> _updateSub(String url, {bool announce = false}) async {
+              try {
+                final res = await http
+                    .get(Uri.parse(url), headers: {
+                      'User-Agent': S.ua,
+                      // شناسه دستگاه برای پنل‌هایی که دستگاه‌ها رو می‌شمارن و نشون می‌دن
+                      'x-hwid': S.deviceId,
+                      'x-device-os': 'Android',
+                      'x-device-model': 'Cyrus',
+                      'x-ver-os': 'Android',
+                    })
+                    .timeout(const Duration(seconds: 20));
+                if (res.statusCode != 200) {
+                  if (announce) {
+                    _toast(tr('سرور ساب جواب درست نداد (${res.statusCode})',
+                        'Subscription server error (${res.statusCode})'));
+                  }
+                  return false;
+                }
+                String body = res.body.trim();
+                if (!body.contains('://')) {
+                  try {
+                    body = utf8.decode(base64.decode(base64.normalize(body)));
+                  } catch (_) {}
+                }
+                final links = body
+                    .split(RegExp(r'[\r\n]+'))
+                    .map((e) => e.trim())
+                    .where(_isLink)
+                    .toList();
+                _parseSubHeaders(url, res.headers);
+                if (links.isEmpty) {
+                  if (announce) {
+                    _toast(tr('تو این ساب کانفیگی پیدا نشد', 'No configs in this subscription'));
+                  }
+                  return false;
+                }
+                final oldCfgs = _configs.where((c) => c.sub == url).toList();
+                  _configs.removeWhere((c) => c.sub == url);
+                  for (final l in links) {
+                    if (!_configs.any((c) => c.link == l)) _configs.add(Cfg(l, url));
+                  }
+                  // اگه فقط اسم/توضیح کانفیگ تغییر کرده، انتخاب و نتایج تست رو منتقل کن
+                  for (final o in oldCfgs) {
+                    if (_byLink(o.link) != null) continue;
+                    Cfg? n;
+                    for (final c in _configs) {
+                      if (c.sub == url && _key(c.link) == _key(o.link)) {
+                        n = c;
+                        break;
+                      }
+                    }
+                    if (n == null) continue;
+                    if (_selected == o.link) _selected = n.link;
+                    if (_activeLink == o.link) _activeLink = n.link;
+                    final sp = _speeds[o.link];
+                    if (sp != null) {
+                      _speeds[n.link] = sp;
+                      _speedAt[n.link] = _speedAt[o.link] ?? 0;
+                    }
+                    final up = _ups[o.link];
+                    if (up != null) _ups[n.link] = up;
+                    final cu = _custom[o.link];
+                    if (cu != null) _custom[n.link] = cu;
+                  }
+                  if (_byLink(_selected) == null && !_connected) {
+                    _selected = _configs.isNotEmpty ? _configs.first.link : null;
+                    _picked = false;
+                  }
+                _lastSubUpdate = DateTime.now();
+                await _save();
+                if (announce) {
+                  _toast(tr('ساب آپدیت شد (${links.length} کانفیگ)',
+                      'Subscription updated (${links.length} configs)'));
+                }
+                return true;
+              } catch (_) {
+                if (announce) {
+                  _toast(tr('دریافت ساب ناموفق بود', 'Could not fetch the subscription'));
+                }
+                return false;
+              }
+            }
+
+            Future<void> _updateOneSub(String url) async {
+              if (_busyUpd.contains(url)) return;
+              setState(() => _busyUpd.add(url));
+              final ok = await _updateSub(url, announce: true);
+              _resort();
+              if (mounted) setState(() => _busyUpd.remove(url));
+              if (ok) {
+                _pingConfigs(_configs.where((c) => c.sub == url).toList(),
+                    manual: true, tries: 2);
+              }
+            }
+
+            Future<void> _updateAllSubs({bool manual = false}) async {
+              if (_updatingSubs || _subs.isEmpty) {
+                _pingAll();
+                return;
+              }
+              setState(() => _updatingSubs = true);
+              final before = _configs.map((c) => c.link).join('\n').hashCode;
+              for (final s in List<String>.from(_subs)) {
+                await _updateSub(s);
+              }
+              _resort();
+              if (mounted) setState(() => _updatingSubs = false);
+              final changed = _configs.map((c) => c.link).join('\n').hashCode != before;
+              if (manual || (changed && !_connected)) _pingAll(manual: true, tries: 2);
+            }
+
+            void _removeSub(String url) {
+              _allowEmpty = true;
+              _subs.remove(url);
+              _subInfo.remove(url);
+              _configs.removeWhere((c) => c.sub == url);
+              if (_byLink(_selected) == null) _selected = null;
+              _resort();
+              setState(() {});
+              _save();
+            }
+
+            void _clearLocal() {
+              _allowEmpty = true;
+              _configs.removeWhere((c) => c.sub == null);
+              if (_byLink(_selected) == null) _selected = null;
+              _resort();
+              setState(() {});
+              _save();
+            }
+
+            // ---------- اتصال ----------
+
+            bool _retrying = false; // چند ثانیه اول وصل شدن؛ پینگ پس‌زمینه کنار می‌مونه
+
+            int _connSeq = 0;
+            DateTime _connectAt = DateTime.fromMillisecondsSinceEpoch(0);
+            bool _v2rayReady = true;
+            bool _rotating = false;
+            int _userGen = 0;
+
+            /// اگه سرویس قبلی هنوز بالاست، قبل از شروع دوباره کامل بسته می‌شه (وصل نشدن به‌خاطر رقابت)
+            Future<void> _ensureStopped() async {
+              if (_status.state == 'DISCONNECTED') return;
+              try {
+                _v2ray.stopV2Ray();
+              } catch (_) {}
+              for (int i = 0; i < 20; i++) {
+                await Future.delayed(const Duration(milliseconds: 150));
+                if (_status.state == 'DISCONNECTED') return;
+              }
+            }
+
+            /// قطع مطمئن: چند بار تلاش و اگه سرویس جواب نداد وضعیت صفحه دستی آزاد می‌شه (قطع نشدن)
+            Future<void> _stopAndSync() async {
+              for (int i = 0; i < 2; i++) {
+                try {
+                  await Future<void>.sync(() => _v2ray.stopV2Ray());
+                } catch (_) {}
+                for (int j = 0; j < 10; j++) {
+                  await Future.delayed(const Duration(milliseconds: 200));
+                  if (!_connected && !_connecting) return;
+                }
+              }
+              _coreEvent('stop not confirmed; forcing local disconnect');
+              if (mounted) setState(() => _status = V2RayStatus());
+            }
+
+            Future<void> _connect() async {
+              final c = _byLink(_selected);
+              if (c == null) return _toast(tr('اول یه کانفیگ انتخاب کن', 'Select a config first'));
+              if (_unsupported(c)) {
+                return _toast(tr('این نوع کانفیگ پشتیبانی نمی‌شه (فقط vmess، vless، trojan، ss، socks، wireguard)',
+                    'This config type is not supported (only vmess, vless, trojan, ss, socks, wireguard)'));
+              }
+              if (_retrying) return; // یه اتصال دیگه در جریانه
+              final seq = ++_connSeq;
+              _connectAt = DateTime.now();
+              _cancelConnect = false;
+              _aliveGen++; // تست واقعی در جریان لغو می‌شه
+              _cancelPings(); // پینگ‌های پس‌زمینه وصل شدن رو کند نکنن
+              _retrying = true;
+              if (mounted) setState(() {});
+              bool started = false;
+              try {
+                // مرحله ۱: ساخت پروفایل از کانفیگ (خطای parse / ساخت کانفیگ)
+                String cfg = '';
+                try {
+                  cfg = _buildConfig(c);
+                } catch (e) {
+                  debugPrint('connect: config build failed (${e.runtimeType})');
+                }
+                if (cfg.isEmpty) {
+                  _toast(tr('کانفیگ نامعتبره یا خونده نشد', 'Invalid config: it could not be parsed'));
+                  return;
+                }
+                final raw = cfg;
+                cfg = await _prepCfg(c, cfg).timeout(const Duration(seconds: 6), onTimeout: () => raw);
+                cfg = _withLog(c, cfg);
+                if (seq != _connSeq || _cancelConnect) return;
+
+                // سرویس قبلی کامل بسته بشه و افزونه آماده باشه
+                await _ensureStopped();
+                if (seq != _connSeq || _cancelConnect) return;
+                if (!_v2rayReady) {
+                  try {
+                    await _v2ray.initialize();
+                    _v2rayReady = true;
+                  } catch (_) {}
+                }
+
+                // مرحله ۲: مجوز نوتیفیکیشن و مجوز VPN اندروید
+                try {
+                  await Permission.notification.request().timeout(const Duration(seconds: 4));
+                } catch (_) {}
+                bool granted = false;
+                try {
+                  granted = await _v2ray.requestPermission().timeout(const Duration(seconds: 45));
+                } on TimeoutException {
+                  _toast(tr('پاسخی به درخواست اجازه VPN نیومد؛ دوباره امتحان کن',
+                      'No answer to the VPN permission request; try again'));
+                  return;
+                } catch (e) {
+                  debugPrint('connect: VPN permission request failed (${e.runtimeType})');
+                  _toast(tr('درخواست اجازه VPN با خطا روبه‌رو شد', 'VPN permission request failed'));
+                  return;
+                }
+                if (seq != _connSeq || _cancelConnect) return;
+                if (!granted) {
+                  _toast(tr('اجازه VPN داده نشد', 'VPN permission denied'));
+                  return;
+                }
+
+                // مرحله ۳: شروع سرویس/موتور
+                _activeLink = c.link;
+                S.wantOn = true;
+                S.save();
+                started = true;
+                _coreEvent('startV2Ray ${_isWg(c) ? 'wireguard' : 'other'}');
+                Future<bool> startEngine() async {
+                  try {
+                    await Future<void>.sync(() => _v2ray.startV2Ray(
+                          remark: _nameOf(c),
+                          config: cfg,
+                          proxyOnly: S.proxyOnly,
+                          bypassSubnets: S.bypassLan
+                              ? const ['10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16']
+                              : null,
+                          notificationDisconnectButtonName: tr('قطع اتصال', 'Disconnect'),
+                        ));
+                    return true;
+                  } catch (e) {
+                    debugPrint('connect: engine start failed (${e.runtimeType})');
+                    return false;
+                  }
+                }
+
+                // منتظر وصل شدن می‌مونیم؛ اگه سرویس اصلاً بالا نیومد زود می‌فهمیم
+                Future<bool> waitUp(int iters, {bool early = false}) async {
+                  for (int i = 0; i < iters; i++) {
+                    await Future.delayed(const Duration(milliseconds: 250));
+                    if (_connected) return true;
+                    if (!S.wantOn || _cancelConnect || seq != _connSeq) return false;
+                    if (early && i >= 19 && _status.state == 'DISCONNECTED') return false;
+                  }
+                  return false;
+                }
+
+                bool live() => S.wantOn && !_cancelConnect && seq == _connSeq;
+
+                started = await startEngine();
+                if (!started) {
+                  S.wantOn = false;
+                  S.save();
+                  _toast(tr('موتور VPN شروع نشد', 'The VPN engine failed to start'));
+                }
+
+                if (started) {
+                  bool up = await waitUp(48, early: true);
+                  // کند ولی در حال اتصال: کمی بیشتر صبر می‌کنیم
+                  if (!up && live() && _status.state == 'CONNECTING') {
+                    up = await waitUp(32);
+                  }
+                  // سرویس بالا نیومده: یک‌بار خودکار بسته و دوباره شروع می‌شه (بدون اینکه کاربر دوباره بزنه)
+                  if (!up && live() && _status.state != 'CONNECTING') {
+                    _coreEvent('quick retry');
+                    await _ensureStopped();
+                    if (live() && await startEngine()) {
+                      up = await waitUp(48);
+                    }
+                  }
+                  if (!up && live()) {
+                    if (_isWg(c)) {
+                      _toast(_status.state == 'DISCONNECTED'
+                          ? tr('هسته برنامه کانفیگ WireGuard رو اجرا نکرد؛ شاید نسخه هسته این پروتکل رو پشتیبانی نکنه',
+                              'The core did not start this WireGuard config; its version may not support WireGuard')
+                          : tr('اتصال WireGuard برقرار نشد', 'The WireGuard connection did not come up'));
+                    } else {
+                      _toast(_status.state == 'DISCONNECTED'
+                          ? tr('هسته این کانفیگ رو اجرا نکرد', 'The core did not start this config')
+                          : tr('اتصال هنوز برقرار نشد؛ دوباره دکمه رو بزن تا لغو بشه', 'The connection did not come up yet; tap again to cancel'));
+                    }
+                  }
+                }
+              } catch (e) {
+                debugPrint('connect: unexpected error (${e.runtimeType})');
+                _toast(tr('خطای غیرمنتظره در اتصال', 'Unexpected connection error'));
+              } finally {
+                // بعد از شروع، چند ثانیه پینگ‌های پس‌زمینه رو نگه می‌داریم
+                if (started && seq == _connSeq) await Future.delayed(const Duration(seconds: 2));
+                if (seq == _connSeq) _retrying = false;
+                if (mounted) setState(() {});
+              }
+            }
+
+            Future<void> _toggle() async {
+              if (_probing) {
+                _cancelProbe = true;
+                for (int i = 0; i < 40 && _probing; i++) {
+                  await Future.delayed(const Duration(milliseconds: 100));
+                }
+              }
+              _userGen++; // هر کار خودکار در جریان (چرخش روش، راه‌اندازی مجدد) دیگه ادامه پیدا نمی‌کنه
+              // وسط چرخش روش یا راه‌اندازی مجدد خودکار زدی: یعنی می‌خوای قطع بشه
+              if (_rotating) {
+                _rotating = false;
+                _cancelConnect = true;
+                _connSeq++; // اتصال در جریان رها می‌شه و دفعه بعد فوراً از نو شروع می‌شه
+                _retrying = false;
+                S.wantOn = false;
+                S.save();
+                await _stopAndSync();
+                return;
+              }
+              if (_retrying && !_connected) {
+                final hung = DateTime.now().difference(_connectAt).inSeconds > 15;
+                if (!hung) {
+                  // وسط اتصال دوباره زدی: لغو
+                  _cancelConnect = true;
+                  _connSeq++; // اتصال در جریان رها می‌شه و دفعه بعد فوراً از نو شروع می‌شه
+                  _retrying = false;
+                  S.wantOn = false;
+                  S.save();
+                  await _stopAndSync();
+                  return;
+                }
+                // اتصال قبلی گیر کرده؛ ولش می‌کنیم و از نو شروع می‌شه
+                _connSeq++;
+                _retrying = false;
+              }
+              if (_connected || _connecting) {
+                S.wantOn = false;
+                S.save();
+                await _stopAndSync();
+                return;
+              }
+              _rot = 0;
+              await _connect();
+            }
+
+            Future<void> _checkConnection() async {
+              if (!_connected) return;
+              _toast(tr('در حال بررسی اتصال...', 'Checking connection...'));
+              final sw = Stopwatch()..start();
+              try {
+                final r = await http
+                    .get(Uri.parse('https://www.gstatic.com/generate_204'))
+                    .timeout(const Duration(seconds: 8));
+                sw.stop();
+                if (r.statusCode == 204 || r.statusCode == 200) {
+                  _toast(tr('اتصال برقرار است (${sw.elapsedMilliseconds} ms)',
+                      'Connection OK (${sw.elapsedMilliseconds} ms)'));
+                } else {
+                  _toast(tr('پاسخ غیرعادی: ${r.statusCode}', 'Unexpected reply: ${r.statusCode}'));
+                }
+              } catch (_) {
+                _toast(tr('اینترنت از طریق VPN کار نمی‌کنه', 'No internet through the VPN'));
+              }
+            }
+
+            // ---------- پینگ واقعی ----------
+
+            static const _pingUrlA = 'http://cp.cloudflare.com/generate_204';
+            static const _pingUrlB = 'https://www.gstatic.com/generate_204';
+            bool _noConnDelay = false; // نسخه افزونه پینگ کانفیگ وصل رو نداره
+
+            /// یک بار پینگ واقعی با هسته؛ -1 یعنی جواب نیومد
+            Future<int> _delayWith(String cfg, String url, int secs) async {
+              try {
+                final dynamic v = _v2ray;
+                dynamic x;
+                try {
+                  x = await v.getServerDelay(config: cfg, url: url).timeout(Duration(seconds: secs));
+                } on NoSuchMethodError {
+                  // نسخه افزونه آدرس تست رو قبول نمی‌کنه
+                  x = await v.getServerDelay(config: cfg).timeout(Duration(seconds: secs));
+                }
+                return (x is num) ? x.toInt() : -1;
+              } catch (_) {
+                return -1;
+              }
+            }
+
+            /// آدرس تست HTTP ساده (بدون TLS تا مقصد) پینگ نزدیک‌تر به واقعیت می‌ده؛
+            /// فقط اگه همون لحظه خطا داد آدرس دوم امتحان می‌شه
+            Future<int> _delayRaw(String cfg, int secs) async {
+              final sw = Stopwatch()..start();
+              final r = await _delayWith(cfg, _pingUrlA, secs);
+              if (r > 0) return r;
+              if (sw.elapsedMilliseconds < 3000) {
+                return _delayWith(cfg, _pingUrlB, secs);
+              }
+              return -1;
+            }
+
+            /// روش‌های اتصال: ۰ ساده، ۱ با DNS داخل هسته، ۲ و ۳ با فرگمنت (ضد فیلتر).
+            /// برای هر کانفیگ خودش پیدا می‌کنه کدوم روش روی اینترنت فعلی جواب می‌ده
+            /// و همون رو برای پینگ و اتصال به کار می‌بره.
+            Future<int> _delayOf(Cfg c, {int tries = 1}) async {
+              if (_unsupported(c)) return -1;
+              final known = _strat[c.link];
+              final bool quick = known != null && tries < 2;
+              final List<int> order = quick
+                  ? [known!]
+                  : [
+                      if (known != null) known,
+                      for (final x in (S.fragment ? const [2, 3, 1, 0] : const [0, 1, 2, 3]))
+                        if (x != known) x,
+                    ];
+              int d = -1;
+              int used = -1;
+              String usedCfg = '';
+              final tried = <String>{};
+              int attempt = 0;
+              for (final x in order) {
+                String cfg = '';
+                try {
+                  cfg = _buildConfig(c, strat: x);
+                } catch (_) {}
+                if (cfg.isEmpty || !tried.add(cfg)) continue;
+                // اولین تلاش وقت بیشتری می‌گیره تا کانفیگ کند، پایان زمان الکی نخوره
+                d = await _delayRaw(cfg, quick ? 10 : (attempt == 0 ? 9 : 6));
+                attempt++;
+                if (d > 0) {
+                  used = x;
+                  usedCfg = cfg;
+                  break;
+                }
+              }
+              if (d <= 0) {
+                if (quick) {
+                  // سه بار پشت‌سرهم جواب نداد؛ شاید اینترنت عوض شده، دوباره همه روش‌ها امتحان بشه
+                  final n = (_stratFail[c.link] ?? 0) + 1;
+                  _stratFail[c.link] = n;
+                  if (n >= 3) {
+                    _strat.remove(c.link);
+                    _stratFail.remove(c.link);
+                  }
+                }
+                return -1;
+              }
+              _stratFail.remove(c.link);
+              if (_strat[c.link] != used) {
+                _strat[c.link] = used;
+                _save();
+              }
+              int best = d;
+              for (int i = 1; i < tries; i++) {
+                final d2 = await _delayRaw(usedCfg, 8);
+                if (d2 > 0 && d2 < best) best = d2;
+              }
+              return best;
+            }
+
+            // ---------- پینگ TCP (مثل V2Box / v2rayNG) ----------
+
+            final Map<String, _Ep?> _eps = {};
+            final Map<String, List<InternetAddress>> _dnsCache = {};
+
+            /// آدرس و پورت سرور؛ برای WireGuard (UDP) و کانفیگ ناشناخته null برمی‌گرده
+            _Ep? _endpointOf(Cfg c) => _eps.putIfAbsent(c.link, () => _calcEndpoint(c));
+
+            _Ep? _calcEndpoint(Cfg c) {
+              try {
+                final m = jsonDecode(_fullConfig(c));
+                if (m is! Map) return null;
+                final obs = m['outbounds'];
+                if (obs is! List) return null;
+                for (final o in obs) {
+                  if (o is! Map) continue;
+                  final p = (o['protocol'] ?? '').toString();
+                  final st = o['settings'];
+                  if (st is! Map) continue;
+                  dynamic e;
+                  if (p == 'vmess' || p == 'vless') {
+                    fina
