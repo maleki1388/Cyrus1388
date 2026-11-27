@@ -70,11 +70,11 @@ jobs:
           import 'package:shared_preferences/shared_preferences.dart';
 
           // ============================================================
-          //  ثابت‌ها و زبان — تم ثابت مشکی/سفید و بدون رنگ‌های تأکیدی
+          //  ثابت‌ها و زبان
           // ============================================================
 
           const appName = 'Cyrus';
-          const cGreen = Color(0xFFADADAD);
+          const cGreen = Color(0xFF39D353);
 
           Color _hsl(double h, double s, double l) => HSLColor.fromAHSL(
                   1, h % 360, s.clamp(0.0, 1.0).toDouble(), l.clamp(0.0, 1.0).toDouble())
@@ -129,17 +129,35 @@ jobs:
           }
 
           final List<AppTheme> kThemes = [
-            _mk('مشکی و سفید', 'Black & White', acc: 0, accSat: 0, accL: 0.92,
+            _mk('تاریک', 'Dark', acc: 0, accSat: 0, accL: 0.82,
                 tint: 0, tintSat: 0,
-                top: const Color(0xFF171717), bottom: const Color(0xFF000000)),
+                top: const Color(0xFF111111), bottom: const Color(0xFF000000)),
+            AppTheme('روشن', 'Light',
+                bg0: const Color(0xFFF7F7F7), bg1: const Color(0xFFFFFFFF),
+                accent: const Color(0xFF222222), accent2: const Color(0xFF444444),
+                line: const Color(0xFFD0D0D0), surface: const Color(0xFFEFEFEF),
+                nav: const Color(0xFFFFFFFF), navLine: const Color(0xFFD8D8D8),
+                btnFill: const Color(0xFFEAEAEA), btnIn: const Color(0xFFF4F4F4),
+                btnInLine: const Color(0xFFD6D6D6), idle: const Color(0xFF777777),
+                card: const Color(0xFFFFFFFF), selected: const Color(0xFFE4E4E4),
+                panel: const Color(0xFFF0F0F0)),
+            _mk('خودکار', 'System', acc: 0, accSat: 0, accL: 0.82,
+                tint: 0, tintSat: 0,
+                top: const Color(0xFF111111), bottom: const Color(0xFF000000)),
           ];
 
           final ValueNotifier<int> themePref = ValueNotifier<int>(0);
 
+          bool get _systemDark => WidgetsBinding.instance.platformDispatcher.platformBrightness == Brightness.dark;
+          int get _resolvedThemeIndex => themePref.value == 2 ? (_systemDark ? 0 : 1) : themePref.value;
           AppTheme get curTheme {
-            final i = themePref.value;
-            return kThemes[(i < 0 || i >= kThemes.length) ? 0 : i];
+            final i = _resolvedThemeIndex;
+            return kThemes[(i < 0 || i >= 2) ? 0 : i];
           }
+
+          Color get cText => _resolvedThemeIndex == 1 ? const Color(0xFF202020) : Colors.white;
+          Color get cTextMuted => _resolvedThemeIndex == 1 ? const Color(0xFF666666) : Colors.white60;
+          Color get cTextDim => _resolvedThemeIndex == 1 ? const Color(0xFF888888) : Colors.white38;
 
           Color get cBg0 => curTheme.bg0;
           Color get cBg1 => curTheme.bg1;
@@ -182,7 +200,7 @@ jobs:
             bool batteryAsked = false;
             bool wantOn = false;
             bool perf = false;
-            bool realPing = true; // پینگ واقعی با هسته (کندتر)؛ خاموش = پینگ TCP تا سرور
+            bool realPing = false; // پینگ سریع TCP تا endpoint کانفیگ؛ تست هسته اختیاری
             bool debugLog = false; // لاگ دقیق هسته (کندتر)
             bool nightMode = true; // وقتی وصلیم CPU نخوابه (پایداری شبانه)
             int theme = 0;
@@ -358,7 +376,7 @@ jobs:
                       child: Padding(
                         padding: const EdgeInsets.all(20),
                         child: Text(details.exceptionAsString(),
-                            style: const TextStyle(color: Colors.white70, fontSize: 12)),
+                            style: TextStyle(color: Colors.redAccent, fontSize: 12)),
                       ),
                     ),
                   );
@@ -383,11 +401,19 @@ jobs:
                 debugShowCheckedModeBanner: false,
                 theme: ThemeData(
                   useMaterial3: true,
-                  brightness: Brightness.dark,
+                  brightness: Brightness.light,
                   colorScheme: ColorScheme.fromSeed(
-                      seedColor: cAccent, brightness: Brightness.dark),
+                      seedColor: const Color(0xFF222222), brightness: Brightness.light),
                   scaffoldBackgroundColor: Colors.transparent,
                 ),
+                darkTheme: ThemeData(
+                  useMaterial3: true,
+                  brightness: Brightness.dark,
+                  colorScheme: ColorScheme.fromSeed(
+                      seedColor: const Color(0xFFE5E5E5), brightness: Brightness.dark),
+                  scaffoldBackgroundColor: Colors.transparent,
+                ),
+                themeMode: themePref.value == 0 ? ThemeMode.dark : (themePref.value == 1 ? ThemeMode.light : ThemeMode.system),
                 builder: (context, child) => ValueListenableBuilder<String>(
                   valueListenable: langPref,
                   builder: (_, __, ___) => Directionality(
@@ -514,7 +540,7 @@ jobs:
                 content: SizedBox(
                   width: double.maxFinite,
                   child: SingleChildScrollView(
-                    child: SelectableText(text, style: const TextStyle(fontSize: 11, fontFamily: 'monospace')),
+                    child: SelectableText(text, style: TextStyle(fontSize: 11, fontFamily: 'monospace')),
                   ),
                 ),
                 actions: [
@@ -728,6 +754,11 @@ jobs:
             }
 
             @override
+            void didChangePlatformBrightness() {
+              if (themePref.value == 2 && mounted) setState(() {});
+            }
+
+            @override
             void didChangeAppLifecycleState(AppLifecycleState state) {
               if (state == AppLifecycleState.resumed) {
                 _foreground = true;
@@ -744,7 +775,7 @@ jobs:
                     DateTime.now().difference(_lastSubUpdate).inSeconds > 30) {
                   _updateAllSubs(manual: idle);
                 } else if (idle) {
-                  _pingAll(manual: true, tries: 2);
+                  _pingAll(manual: true, tries: 1);
                 }
               } else if (state == AppLifecycleState.paused) {
                 _foreground = false;
@@ -793,7 +824,7 @@ jobs:
                 _toast(tr('دفعه قبل وسط تست یه کانفیگ برنامه بسته شد؛ پینگ خودکار این بار خاموش شد',
                     'The app closed during a config test last time, so auto ping is skipped this time'));
               } else {
-                _pingAll(manual: true, tries: 2);
+                _pingAll(manual: true, tries: 1);
               }
               if (_subs.isNotEmpty && S.autoUpdate) {
                 await _updateAllSubs(); // اگه کانفیگ‌ها عوض شده باشن دوباره پینگ می‌گیره
@@ -1962,7 +1993,7 @@ jobs:
               _resort();
               if (mounted) setState(() => _updatingSubs = false);
               final changed = _configs.map((c) => c.link).join('\n').hashCode != before;
-              if (manual || (changed && !_connected)) _pingAll(manual: true, tries: 2);
+              if (manual || (changed && !_connected)) _pingAll(manual: true, tries: 1);
             }
 
             void _removeSub(String url) {
@@ -1988,7 +2019,6 @@ jobs:
             // ---------- اتصال ----------
 
             bool _retrying = false; // چند ثانیه اول وصل شدن؛ پینگ پس‌زمینه کنار می‌مونه
-            bool _stopPending = false; // جلوگیری از اجرای هم‌زمان چند دستور قطع
 
             int _connSeq = 0;
             DateTime _connectAt = DateTime.fromMillisecondsSinceEpoch(0);
@@ -2177,7 +2207,6 @@ jobs:
             }
 
             Future<void> _toggle() async {
-              if (_stopPending) return; // کلیک تکراری تا پایان قطع نادیده گرفته شود
               if (_probing) {
                 _cancelProbe = true;
                 for (int i = 0; i < 40 && _probing; i++) {
@@ -2226,7 +2255,6 @@ jobs:
                 _cancelConnect = true;
                 _rotating = false;
                 _dropSeen = false;
-                _stopPending = true;
                 final stopping = _stopAndSync();
                 // دستور دوم قطع، اگر اولی اثر نکرد
                 final offAt = _userOffAt;
@@ -2235,8 +2263,6 @@ jobs:
                 });
                 if (mounted) setState(() => _status = V2RayStatus());
                 await stopping;
-                _stopPending = false;
-                if (mounted) setState(() {});
                 return;
               }
               _rot = 0;
@@ -2726,7 +2752,7 @@ jobs:
                 // حالت پیش‌فرض: هیچ کد بومی (هسته) صدا زده نمی‌شه؛ فقط اتصال TCP به سرور
                 final ep = _endpointOf(c);
                 if (ep == null) return -1;
-                return _tcpPing(ep, tries: 3);
+                return _tcpPing(ep, tries: 1);
               }
               if (_coreBad.contains(c.link)) return -1;
               await _coreMark(c.link, true);
@@ -2778,7 +2804,7 @@ jobs:
                   try {
                     // مثل پینگ تکی
                     if (manual) _coreBad.remove(c.link);
-                    d = await _pingValue(c, tries: manual ? 2 : tries);
+                    d = await _pingValue(c, tries: manual ? 1 : tries);
                   } catch (e) {
                     _coreEvent('ping error ${e.runtimeType}');
                   }
@@ -2817,7 +2843,7 @@ jobs:
               }
 
               // پینگ TCP سبکه و هم‌زمان بیشتر می‌شه؛ تست واقعی هسته سه‌تا سه‌تا
-              await Future.wait(List.generate(S.realPing ? 1 : 8, (_) => worker()));
+              await Future.wait(List.generate(12, (_) => worker()));
               if (gen != _pingGen) return;
               _pinging = false;
               if (!manual && items.length == 1) {
@@ -3261,8 +3287,6 @@ jobs:
 
             /// قطع اتصال از دکمه اعلان (کد بومی صدا می‌زنه)
             Future<void> _userDisconnect() async {
-              if (_stopPending) return;
-              _stopPending = true;
               _userGen++;
               S.wantOn = false;
               S.save();
@@ -3274,8 +3298,6 @@ jobs:
                 _wakeOn = false;
                 _wake(false);
               }
-              _stopPending = false;
-              if (mounted) setState(() {});
             }
 
             void _notifUpdate(V2RayStatus s) {
@@ -3437,7 +3459,7 @@ jobs:
                 return t == null || now - t > 30 * 60 * 1000;
               }).toList()
                 ..sort((a, b) => _pings[a.link]!.compareTo(_pings[b.link]!));
-              final top = cands.take(10).toList();
+              final top = cands.take(5).toList();
               if (top.isEmpty) return;
 
               _probing = true;
@@ -3589,7 +3611,7 @@ jobs:
               if (_smartBusy) return;
               setState(() => _smartBusy = true);
               _toast(tr('در حال تست دقیق پینگ...', 'Running accurate ping test...'));
-              await _pingAll(manual: true, tries: 2);
+              await _pingAll(manual: true, tries: 1);
               _resort();
               if (!S.realPing && !_connected) {
                 _toast(tr('پینگ تمام شد؛ حالا تست واقعی اتصال کانفیگ‌ها...', 'Ping done; now testing real connectivity...'));
@@ -3770,13 +3792,13 @@ jobs:
                     child: Column(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        Icon(sel ? on : off, size: 26, color: sel ? cBlue : Colors.white60),
+                        Icon(sel ? on : off, size: 26, color: sel ? cBlue : cTextMuted),
                         const SizedBox(height: 3),
                         Text(label,
                             style: TextStyle(
                                 fontSize: 11.5,
                                 fontWeight: sel ? FontWeight.w700 : FontWeight.w500,
-                                color: sel ? cBlue : Colors.white60)),
+                                color: sel ? cBlue : cTextMuted)),
                       ],
                     ),
                   ),
@@ -3831,15 +3853,15 @@ jobs:
               return Expanded(
                 child: Container(
                   margin: const EdgeInsets.all(4),
-                  height: 132,
+                  height: 150,
                   decoration: BoxDecoration(
                     gradient: LinearGradient(
                       begin: Alignment.topCenter,
                       end: Alignment.bottomCenter,
                       colors: [cSurface, Color.alphaBlend(color.withOpacity(0.10), cSurface)],
                     ),
-                    borderRadius: BorderRadius.circular(21),
-                    border: Border.all(color: color.withOpacity(0.28), width: 1.0),
+                    borderRadius: BorderRadius.circular(24),
+                    border: Border.all(color: color.withOpacity(0.35), width: 1.2),
                     boxShadow: [BoxShadow(color: color.withOpacity(0.10), blurRadius: 14, offset: const Offset(0, 4))],
                   ),
                   clipBehavior: Clip.antiAlias,
@@ -3870,7 +3892,7 @@ jobs:
                                   child: Text(title,
                                       maxLines: 1,
                                       overflow: TextOverflow.ellipsis,
-                                      style: const TextStyle(fontSize: 14, color: Colors.white70)),
+                                      style: TextStyle(fontSize: 14, color: cTextMuted)),
                                 ),
                               ],
                             ),
@@ -3885,11 +3907,11 @@ jobs:
                                   textBaseline: TextBaseline.alphabetic,
                                   children: [
                                     Text(value,
-                                        style: const TextStyle(
-                                            fontSize: 23, fontWeight: FontWeight.w800)),
+                                        style: TextStyle(
+                                            fontSize: 26, fontWeight: FontWeight.w700)),
                                     const SizedBox(width: 4),
                                     Text(unit,
-                                        style: const TextStyle(fontSize: 12, color: Colors.white70)),
+                                        style: TextStyle(fontSize: 12, color: cTextMuted)),
                                   ],
                                 ),
                               ),
@@ -3945,12 +3967,12 @@ jobs:
                               Text(title,
                                   maxLines: 1,
                                   overflow: TextOverflow.ellipsis,
-                                  style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+                                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
                               const SizedBox(height: 4),
                               Text(sub,
                                   maxLines: 2,
                                   overflow: TextOverflow.ellipsis,
-                                  style: const TextStyle(fontSize: 11, color: Colors.white60)),
+                                  style: TextStyle(fontSize: 11, color: cTextMuted)),
                             ],
                           ),
                         ),
@@ -3962,45 +3984,44 @@ jobs:
               );
             }
 
-            /// برند جمع‌وجور و پریمیوم
+            /// لوگوی خانه: اسم برنامه با گرادیان
             Widget _brand() {
               final a = cBlue;
               final b = cCyan;
-              return Row(
-                children: [
-                  Container(
-                    width: 48,
-                    height: 48,
-                    decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(16),
-                      gradient: LinearGradient(begin: Alignment.topLeft, end: Alignment.bottomRight, colors: [a, b]),
-                      boxShadow: [BoxShadow(color: a.withOpacity(0.28), blurRadius: 18, offset: const Offset(0, 5))],
+              Shader grad(Rect r) => LinearGradient(
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                    colors: [a, b],
+                  ).createShader(r);
+              return Directionality(
+                textDirection: TextDirection.ltr,
+                child: Column(
+                  children: [
+                    ShaderMask(
+                      blendMode: BlendMode.srcIn,
+                      shaderCallback: grad,
+                      child: const Text(
+                        'CYRUS',
+                        style: TextStyle(
+                          fontSize: 62,
+                          fontWeight: FontWeight.w900,
+                          letterSpacing: 10,
+                          color: cText,
+                          height: 1.1,
+                        ),
+                      ),
                     ),
-                    child: const Icon(Icons.bolt_rounded, color: Colors.white, size: 29),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const Text('CYRUS', textDirection: TextDirection.ltr,
-                            style: TextStyle(fontSize: 23, fontWeight: FontWeight.w900, letterSpacing: 3.2, height: 1.05)),
-                        const SizedBox(height: 4),
-                        Text(tr('اتصال هوشمند و سریع', 'SMART • SECURE • FAST'),
-                            style: TextStyle(fontSize: 10.5, letterSpacing: 1.1, color: Colors.white.withOpacity(0.55))),
-                      ],
+                    const SizedBox(height: 8),
+                    Container(
+                      width: 120,
+                      height: 3,
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(3),
+                        gradient: LinearGradient(colors: [a.withOpacity(0), a, b, b.withOpacity(0)]),
+                      ),
                     ),
-                  ),
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
-                    decoration: BoxDecoration(color: cSurface, borderRadius: BorderRadius.circular(30), border: Border.all(color: cLine.withOpacity(0.35))),
-                    child: Row(mainAxisSize: MainAxisSize.min, children: [
-                      Container(width: 7, height: 7, decoration: BoxDecoration(shape: BoxShape.circle, color: _connected ? cGreen : Colors.white38)),
-                      const SizedBox(width: 6),
-                      Text(_connected ? tr('فعال', 'ACTIVE') : tr('آماده', 'READY'), style: const TextStyle(fontSize: 10, fontWeight: FontWeight.w700, letterSpacing: 0.6)),
-                    ]),
-                  ),
-                ],
+                  ],
+                ),
               );
             }
 
@@ -4009,7 +4030,7 @@ jobs:
               final color = _connected
                   ? cCyan
                   : busyConn
-                      ? Colors.white60
+                      ? Colors.orangeAccent
                       : cIdle;
               final sel = _byLink(_selected);
               final bool selWg = sel != null && _isWg(sel);
@@ -4039,22 +4060,22 @@ jobs:
               final dot = _connected
                   ? cGreen
                   : busyConn
-                      ? Colors.white60
-                      : Colors.white38;
+                      ? Colors.orangeAccent
+                      : cTextDim;
 
               return ListView(
-                padding: const EdgeInsets.fromLTRB(18, 10, 18, 20),
+                padding: const EdgeInsets.fromLTRB(16, 6, 16, 16),
                 children: [
                   Row(
                     children: [
-                      _glassBtn(Icons.translate_rounded, _toggleLang),
+                      _glassBtn(Icons.translate, _toggleLang),
                       const Spacer(),
-                      _glassBtn(Icons.tune_rounded, () => setState(() => _tab = 3)),
+                      _glassBtn(Icons.settings, () => setState(() => _tab = 3)),
                     ],
                   ),
-                  const SizedBox(height: 13),
+                  const SizedBox(height: 14),
                   _brand(),
-                  const SizedBox(height: 18),
+                  const SizedBox(height: 26),
                   Center(
                     child: PowerButton(
                       color: color,
@@ -4094,7 +4115,7 @@ jobs:
                                 style: TextStyle(
                                     fontSize: 20,
                                     fontWeight: FontWeight.w600,
-                                    color: _connected ? cGreen : Colors.white70)),
+                                    color: _connected ? cGreen : cTextMuted)),
                           ],
                         ),
                       ),
@@ -4106,7 +4127,7 @@ jobs:
                       child: Center(
                         child: Text(_status.duration,
                             textDirection: TextDirection.ltr,
-                            style: const TextStyle(color: Colors.white54)),
+                            style: TextStyle(color: cTextMuted)),
                       ),
                     ),
                   if (_connected && sel != null)
@@ -4129,7 +4150,7 @@ jobs:
                                 child: Text(_nameOf(sel),
                                     maxLines: 1,
                                     overflow: TextOverflow.ellipsis,
-                                    style: const TextStyle(fontSize: 13, color: Colors.white70)),
+                                    style: TextStyle(fontSize: 13, color: cTextMuted)),
                               ),
                             ],
                           ),
@@ -4139,9 +4160,9 @@ jobs:
                   const SizedBox(height: 18),
                   Row(
                     children: [
-                      _statCard(Icons.arrow_downward, const Color(0xFF808080), tr('دانلود', 'Download'),
+                      _statCard(Icons.arrow_downward, const Color(0xFF1E90FF), tr('دانلود', 'Download'),
                           dlParts[0], dlParts[1], _dlHist),
-                      _statCard(Icons.arrow_upward, const Color(0xFF646464), tr('آپلود', 'Upload'),
+                      _statCard(Icons.arrow_upward, const Color(0xFF7B4DFF), tr('آپلود', 'Upload'),
                           ulParts[0], ulParts[1], _ulHist),
                       _statCard(Icons.speed, cGreen, tr('پینگ', 'Ping'), pingTxt, 'ms', pingHist),
                     ],
@@ -4171,12 +4192,12 @@ jobs:
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
                                 Text(tr('انتخاب سرور', 'Select server'),
-                                    style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w600)),
+                                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600)),
                                 const SizedBox(height: 4),
                                 Text(sel == null ? tr('هنوز کانفیگی نیست', 'No configs yet') : _nameOf(sel),
                                     maxLines: 1,
                                     overflow: TextOverflow.ellipsis,
-                                    style: const TextStyle(fontSize: 13, color: Colors.white60)),
+                                    style: TextStyle(fontSize: 13, color: cTextMuted)),
                               ],
                             ),
                           ),
@@ -4224,7 +4245,7 @@ jobs:
                   padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
                   child: Row(
                     children: [
-                      Text(k, style: const TextStyle(fontSize: 16)),
+                      Text(k, style: TextStyle(fontSize: 16)),
                       const Spacer(),
                       Directionality(
                         textDirection: TextDirection.ltr,
@@ -4250,7 +4271,7 @@ jobs:
                   Padding(
                     padding: const EdgeInsets.fromLTRB(6, 10, 6, 10),
                     child: Text(tr('آمار', 'Statistics'),
-                        style: const TextStyle(fontSize: 32, fontWeight: FontWeight.w600)),
+                        style: TextStyle(fontSize: 32, fontWeight: FontWeight.w600)),
                   ),
                   _pageCard([
                     _statRow(tr('وضعیت', 'Status'),
@@ -4319,26 +4340,26 @@ jobs:
               return Container(
                 padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
                 decoration: BoxDecoration(
-                    color: const Color(0xFF9A9A9A), borderRadius: BorderRadius.circular(10)),
+                    color: const Color(0xFF12351D), borderRadius: BorderRadius.circular(10)),
                 child: Text('$p ms',
                     textDirection: TextDirection.ltr,
-                    style: const TextStyle(
-                        color: Colors.black87, fontSize: 15, fontWeight: FontWeight.w600)),
+                    style: TextStyle(
+                        color: const Color(0xFF39D353), fontSize: 15, fontWeight: FontWeight.w700)),
               );
             }
 
             Widget _speedBadge(double s) {
               final color = s <= 0.05
-                  ? const Color(0xFF8A8A8A)
+                  ? const Color(0xFFEF6F6C)
                   : s >= 10
-                      ? const Color(0xFF979797)
-                      : const Color(0xFFBFBFBF);
+                      ? const Color(0xFF4DA3FF)
+                      : const Color(0xFFFFB74D);
               return Container(
                 padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 3),
                 decoration: BoxDecoration(color: color, borderRadius: BorderRadius.circular(8)),
-                child: Text('${s.toStringAsFixed(1)} Mbps',
+                child: Text(s.toStringAsFixed(1),
                     textDirection: TextDirection.ltr,
-                    style: const TextStyle(
+                    style: TextStyle(
                         color: Colors.black87, fontSize: 12, fontWeight: FontWeight.w600)),
               );
             }
@@ -4350,10 +4371,10 @@ jobs:
                   padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 3),
                   decoration: BoxDecoration(
                       color: Colors.white12, borderRadius: BorderRadius.circular(8)),
-                  child: const Text('— Mbps',
+                  child: const Text('—',
                       textDirection: TextDirection.ltr,
                       style: TextStyle(
-                          color: Colors.white54, fontSize: 12, fontWeight: FontWeight.w600)),
+                          color: cTextMuted, fontSize: 12, fontWeight: FontWeight.w600)),
                 );
               }
               return _speedBadge(sp);
@@ -4401,7 +4422,7 @@ jobs:
                               _lastSubUpdate = DateTime.fromMillisecondsSinceEpoch(0);
                               _updateAllSubs(manual: true);
                             }
-                            if (v == 'ping') _pingAll(manual: true, tries: 2);
+                            if (v == 'ping') _pingAll(manual: true, tries: 1);
                           },
                           itemBuilder: (_) => [
                             PopupMenuItem(
@@ -4416,7 +4437,7 @@ jobs:
                   Padding(
                     padding: const EdgeInsets.fromLTRB(20, 0, 20, 4),
                     child: Text(tr('پیکربندی‌ها', 'Configs'),
-                        style: const TextStyle(fontSize: 32, fontWeight: FontWeight.w600)),
+                        style: TextStyle(fontSize: 32, fontWeight: FontWeight.w600)),
                   ),
                   Padding(
                     padding: const EdgeInsets.fromLTRB(16, 0, 8, 4),
@@ -4463,7 +4484,7 @@ jobs:
                         IconButton(
                           onPressed: _toggle,
                           icon: Icon(Icons.power_settings_new,
-                              color: _connected ? cGreen : Colors.white54),
+                              color: _connected ? cGreen : cTextMuted),
                         ),
                       ],
                     ),
@@ -4517,7 +4538,7 @@ jobs:
                               '${g.title} (${g.items.length})',
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(
+                              style: TextStyle(
                                   fontSize: 20, fontWeight: FontWeight.w500),
                             ),
                           ),
@@ -4597,18 +4618,18 @@ jobs:
                                             children: [
                                               Text(
                                                   '${_gb(info!.used)} / ${_gb(info!.total)}',
-                                                  style: const TextStyle(
+                                                  style: TextStyle(
                                                       fontSize: 12,
-                                                      color: Colors.white70)),
+                                                      color: cTextMuted)),
                                               if (days != null)
                                                 Text(
                                                     days > 0
                                                         ? tr('$days روز باقی‌مانده',
                                                             '$days days left')
                                                         : tr('منقضی شد', 'Expired'),
-                                                    style: const TextStyle(
+                                                    style: TextStyle(
                                                         fontSize: 12,
-                                                        color: Colors.white70)),
+                                                        color: cTextMuted)),
                                             ],
                                           ),
                                         ],
@@ -4627,16 +4648,16 @@ jobs:
             Widget _pingBadge(int p) {
               final bad = p < 0;
               final color = bad
-                  ? const Color(0xFF8A8A8A)
-                  : const Color(0xFF9F9F9F);
+                  ? const Color(0xFF4A2525)
+                  : const Color(0xFF12351D);
               return Container(
                 padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 3),
                 decoration:
                     BoxDecoration(color: color, borderRadius: BorderRadius.circular(8)),
                 child: Text(
                   bad ? tr('پایان زمان', 'Timeout') : '$p ms',
-                  style: const TextStyle(
-                      color: Colors.black87, fontSize: 12, fontWeight: FontWeight.w600),
+                  style: TextStyle(
+                      color: bad ? const Color(0xFFFF7777) : const Color(0xFF39D353), fontSize: 12, fontWeight: FontWeight.w700),
                 ),
               );
             }
@@ -4649,7 +4670,7 @@ jobs:
                   width: 30,
                   height: 30,
                   decoration:
-                      const BoxDecoration(shape: BoxShape.circle, color: Color(0xFF5C5C5C)),
+                      const BoxDecoration(shape: BoxShape.circle, color: Color(0xFF5C5C5E)),
                   child: busy
                       ? const Padding(
                           padding: EdgeInsets.all(7),
@@ -4723,15 +4744,15 @@ jobs:
                                   Text(_nameOf(c),
                                       maxLines: 1,
                                       overflow: TextOverflow.ellipsis,
-                                      style: const TextStyle(fontSize: 15)),
+                                      style: TextStyle(fontSize: 15)),
                                   Row(
                                     children: [
                                       Expanded(
                                         child: Text(_hostOf(c),
                                             maxLines: 1,
                                             overflow: TextOverflow.ellipsis,
-                                            style: const TextStyle(
-                                                color: Colors.white60, fontSize: 14)),
+                                            style: TextStyle(
+                                                color: cTextMuted, fontSize: 14)),
                                       ),
                                       if (!_isWg(c) && ping != null) ...[
                                         Flexible(
@@ -4814,15 +4835,15 @@ jobs:
 
             Widget _sec(String t) => Padding(
                   padding: const EdgeInsets.fromLTRB(14, 18, 14, 6),
-                  child: Text(t, style: const TextStyle(color: Colors.white60)),
+                  child: Text(t, style: TextStyle(color: cTextMuted)),
                 );
 
             Widget _navTile(IconData icon, String title, Widget Function() page) {
               return ListTile(
                 contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 6),
                 leading: Icon(icon, size: 30),
-                title: Text(title, style: const TextStyle(fontSize: 17)),
-                trailing: const Icon(Icons.chevron_right, color: Colors.white54),
+                title: Text(title, style: TextStyle(fontSize: 17)),
+                trailing: Icon(Icons.chevron_right, color: cTextMuted),
                 onTap: () => Navigator.of(context)
                     .push(MaterialPageRoute(builder: (_) => page()))
                     .then((_) {
@@ -4832,50 +4853,29 @@ jobs:
             }
 
             Widget _themeSwatch(int i) {
-              final th = kThemes[i];
+              final labels = [tr('تاریک', 'Dark'), tr('روشن', 'Light'), tr('خودکار', 'System')];
+              final icons = [Icons.dark_mode_outlined, Icons.light_mode_outlined, Icons.phone_android_outlined];
               final sel = themePref.value == i;
-              return InkWell(
-                borderRadius: BorderRadius.circular(16),
-                onTap: () {
-                  S.theme = i;
-                  themePref.value = i;
-                  S.save();
-                },
-                child: SizedBox(
-                  width: 74,
-                  child: Column(
-                    children: [
-                      Container(
-                        width: 62,
-                        height: 62,
-                        decoration: BoxDecoration(
-                          borderRadius: BorderRadius.circular(18),
-                          gradient: LinearGradient(
-                            begin: Alignment.topLeft,
-                            end: Alignment.bottomRight,
-                            colors: [th.bg1, th.bg0],
-                          ),
-                          border: Border.all(
-                              color: sel ? Colors.white : th.accent, width: sel ? 3 : 1.5),
-                        ),
-                        child: Center(
-                          child: sel
-                              ? Icon(Icons.check, color: th.accent, size: 28)
-                              : Container(
-                                  width: 20,
-                                  height: 20,
-                                  decoration:
-                                      BoxDecoration(shape: BoxShape.circle, color: th.accent),
-                                ),
-                        ),
-                      ),
-                      const SizedBox(height: 4),
-                      Text(isFa ? th.fa : th.en,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                              fontSize: 11, color: sel ? Colors.white : Colors.white60)),
-                    ],
+              return Expanded(
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(14),
+                  onTap: () {
+                    S.theme = i;
+                    themePref.value = i;
+                    S.save();
+                  },
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
+                    decoration: BoxDecoration(
+                      color: sel ? cSelected : cCard,
+                      borderRadius: BorderRadius.circular(14),
+                      border: Border.all(color: sel ? cAccent : cLine, width: sel ? 1.8 : 1),
+                    ),
+                    child: Column(mainAxisSize: MainAxisSize.min, children: [
+                      Icon(icons[i], size: 22, color: sel ? cAccent : cIdle),
+                      const SizedBox(height: 5),
+                      Text(labels[i], style: TextStyle(fontSize: 12, color: sel ? cAccent : cIdle, fontWeight: sel ? FontWeight.w600 : FontWeight.normal)),
+                    ]),
                   ),
                 ),
               );
@@ -4888,60 +4888,37 @@ jobs:
                   Padding(
                     padding: const EdgeInsets.fromLTRB(6, 10, 6, 10),
                     child: Text(tr('تنظیمات', 'Settings'),
-                        style: const TextStyle(fontSize: 32, fontWeight: FontWeight.w600)),
+                        style: TextStyle(fontSize: 32, fontWeight: FontWeight.w600)),
                   ),
-                  _sec(tr('رنگ و پس‌زمینه', 'Color & background')),
+                  _sec(tr('ظاهر برنامه', 'App appearance')),
                   _card([
-                    ListTile(
-                      contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 4),
-                      leading: Container(
-                        width: 42,
-                        height: 42,
-                        decoration: BoxDecoration(
-                          borderRadius: BorderRadius.circular(12),
-                          gradient: LinearGradient(
-                            begin: Alignment.topLeft,
-                            end: Alignment.bottomRight,
-                            colors: [curTheme.bg1, curTheme.bg0],
-                          ),
-                          border: Border.all(color: curTheme.accent, width: 1.5),
-                        ),
-                        child: Center(
-                          child: Container(
-                            width: 14,
-                            height: 14,
-                            decoration: BoxDecoration(shape: BoxShape.circle, color: curTheme.accent),
-                          ),
-                        ),
-                      ),
-                      title: Text(tr('رنگ و پس‌زمینه', 'Color & background'),
-                          style: const TextStyle(fontSize: 17)),
-                      subtitle: Text(isFa ? curTheme.fa : curTheme.en),
-                      trailing: AnimatedRotation(
-                        turns: _themesOpen ? 0.5 : 0,
-                        duration: const Duration(milliseconds: 200),
-                        child: const Icon(Icons.expand_more, color: Colors.white54),
-                      ),
-                      onTap: () => setState(() => _themesOpen = !_themesOpen),
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+                      child: Row(children: [
+                        Icon(Icons.palette_outlined, color: cAccent),
+                        const SizedBox(width: 10),
+                        Text(tr('ظاهر برنامه', 'App appearance'), style: TextStyle(fontSize: 17)),
+                        const Spacer(),
+                        Text(themePref.value == 0 ? tr('تاریک', 'Dark') : (themePref.value == 1 ? tr('روشن', 'Light') : tr('خودکار', 'System')),
+                          style: TextStyle(color: cIdle, fontSize: 12)),
+                      ]),
                     ),
-                    if (_themesOpen)
-                      Padding(
-                        padding: const EdgeInsets.all(14),
-                        child: Wrap(
-                          spacing: 10,
-                          runSpacing: 12,
-                          children: [
-                            for (int i = 0; i < kThemes.length; i++) _themeSwatch(i),
-                          ],
-                        ),
-                      ),
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(12, 8, 12, 14),
+                      child: Row(children: [
+                        for (int i = 0; i < 3; i++) ...[
+                          _themeSwatch(i),
+                          if (i < 2) const SizedBox(width: 8),
+                        ],
+                      ]),
+                    ),
                   ]),
                   _card([
                     Padding(
                       padding: const EdgeInsets.fromLTRB(20, 10, 20, 10),
                       child: Row(
                         children: [
-                          Text(tr('زبان', 'Language'), style: const TextStyle(fontSize: 17)),
+                          Text(tr('زبان', 'Language'), style: TextStyle(fontSize: 17)),
                           const Spacer(),
                           DropdownButton<String>(
                             value: S.lang,
@@ -4968,7 +4945,7 @@ jobs:
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(tr('شناسه دستگاه', 'Device ID'),
-                              style: const TextStyle(fontSize: 17)),
+                              style: TextStyle(fontSize: 17)),
                           const SizedBox(height: 10),
                           Row(
                             children: [
@@ -4981,7 +4958,7 @@ jobs:
                                       borderRadius: BorderRadius.circular(10)),
                                   child: Text(S.deviceId,
                                       textDirection: TextDirection.ltr,
-                                      style: const TextStyle(
+                                      style: TextStyle(
                                           color: Colors.black87, fontSize: 13)),
                                 ),
                               ),
@@ -4999,7 +4976,7 @@ jobs:
                               tr('شناسه دستگاه در صورت نصب مجدد تغییر می‌کند',
                                   'The device ID changes if you reinstall the app'),
                               style:
-                                  const TextStyle(fontSize: 12, color: Colors.white60)),
+                                  TextStyle(fontSize: 12, color: cTextMuted)),
                         ],
                       ),
                     ),
@@ -5077,7 +5054,7 @@ jobs:
                             child: Text(
                               tr('سلام و وقت بخیر، امیدوارم حالتون خوب باشه. من تمام تلاشم را کردم که بهترین عملکرد رو از کانفیگ‌ها بگیرم، به امید اینکه دیگه قطعی نباشه و نیاز به وی‌پی‌ان نباشه. با تشکر',
                                   'Hello, and good day. I hope you are well. I did my best to get the best performance out of the configs, hoping there will be no more outages and that a VPN will not be needed anymore. Thank you.'),
-                              style: const TextStyle(height: 1.7),
+                              style: TextStyle(height: 1.7),
                             ),
                           ),
                           actions: [
@@ -5163,8 +5140,8 @@ jobs:
               return GestureDetector(
                 onTap: widget.onTap,
                 child: SizedBox(
-                  width: 244,
-                  height: 244,
+                  width: 264,
+                  height: 264,
                   child: AnimatedBuilder(
                     animation: _c,
                     builder: (context, _) {
@@ -5178,16 +5155,16 @@ jobs:
                             _ring((t + 0.5) % 1.0, color),
                           ],
                           Container(
-                            width: 226,
-                            height: 226,
+                            width: 246,
+                            height: 246,
                             decoration: BoxDecoration(
                               shape: BoxShape.circle,
                               border: Border.all(color: color.withOpacity(0.22), width: 1.5),
                             ),
                           ),
                           Container(
-                            width: 204,
-                            height: 204,
+                            width: 218,
+                            height: 218,
                             decoration: BoxDecoration(
                               shape: BoxShape.circle,
                               gradient: RadialGradient(
@@ -5196,8 +5173,8 @@ jobs:
                             ),
                           ),
                           Container(
-                            width: 188,
-                            height: 188,
+                            width: 200,
+                            height: 200,
                             decoration: BoxDecoration(
                               shape: BoxShape.circle,
                               color: cBtnFill,
@@ -5310,7 +5287,7 @@ jobs:
 
           Widget _hint(String t) => Padding(
                 padding: const EdgeInsets.fromLTRB(8, 10, 8, 4),
-                child: Text(t, style: const TextStyle(color: Colors.white60, fontSize: 13)),
+                child: Text(t, style: TextStyle(color: cTextMuted, fontSize: 13)),
               );
 
           class TunnelSettingsPage extends StatefulWidget {
@@ -5457,7 +5434,7 @@ jobs:
               final sel = S.dnsPreset == id;
               return ListTile(
                 leading: Icon(sel ? Icons.radio_button_checked : Icons.radio_button_off,
-                    color: sel ? cAccent : Colors.white54),
+                    color: sel ? cAccent : cTextMuted),
                 title: Text(title),
                 subtitle: sub.isEmpty
                     ? null
@@ -5697,7 +5674,7 @@ jobs:
                                   crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
                                     Text('${r.title} (${r.count})',
-                                        style: const TextStyle(
+                                        style: TextStyle(
                                             fontSize: 18, fontWeight: FontWeight.w600)),
                                     const SizedBox(height: 10),
                                     if (r.total > 0) ...[
@@ -5710,7 +5687,7 @@ jobs:
                                       Text('${_gb(r.used)} / ${_gb(r.total)}'),
                                     ] else
                                       Text(tr('اطلاعات حجم موجود نیست', 'No traffic info available'),
-                                          style: const TextStyle(color: Colors.white60)),
+                                          style: TextStyle(color: cTextMuted)),
                                     if (_daysLeft(r.expire) != null) ...[
                                       const SizedBox(height: 6),
                                       Text(_daysLeft(r.expire)! > 0
@@ -5801,7 +5778,7 @@ jobs:
                           style: TextStyle(
                               fontSize: 22, fontWeight: FontWeight.w700, color: cAccent)),
                       const SizedBox(height: 6),
-                      Text(title, style: const TextStyle(color: Colors.white60)),
+                      Text(title, style: TextStyle(color: cTextMuted)),
                     ],
                   ),
                 ),
@@ -5831,7 +5808,7 @@ jobs:
                       if (_err != null)
                         Padding(
                           padding: const EdgeInsets.only(top: 8),
-                          child: Text(_err!, style: const TextStyle(color: Colors.white70)),
+                          child: Text(_err!, style: TextStyle(color: Colors.redAccent)),
                         ),
                       const SizedBox(height: 16),
                       SizedBox(
@@ -5847,7 +5824,7 @@ jobs:
                         tr('برای تست سرعت خود VPN، اول وصل شو و بعد تست رو بزن.',
                             'To test the VPN speed, connect first and then run the test.'),
                         textAlign: TextAlign.center,
-                        style: const TextStyle(color: Colors.white60),
+                        style: TextStyle(color: cTextMuted),
                       ),
                     ],
                   ),
@@ -6154,7 +6131,7 @@ jobs:
                             foregroundColor: Colors.white,
                           ),
                           icon: Icon(icon),
-                          label: Text(label, style: const TextStyle(fontSize: 16)),
+                          label: Text(label, style: TextStyle(fontSize: 16)),
                         )
                       : OutlinedButton.icon(
                           onPressed: onTap,
@@ -6164,7 +6141,7 @@ jobs:
                             side: BorderSide(color: cLine, width: 1.5),
                           ),
                           icon: Icon(icon),
-                          label: Text(label, style: const TextStyle(fontSize: 16)),
+                          label: Text(label, style: TextStyle(fontSize: 16)),
                         ),
                 ),
               );
@@ -6178,16 +6155,16 @@ jobs:
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      const Icon(Icons.no_photography, size: 56, color: Colors.white70),
+                      Icon(Icons.no_photography, size: 56, color: cTextMuted),
                       const SizedBox(height: 14),
                       Text(title,
                           textAlign: TextAlign.center,
-                          style: const TextStyle(fontSize: 18)),
+                          style: TextStyle(fontSize: 18)),
                       const SizedBox(height: 8),
                       Text(detail,
                           textAlign: TextAlign.center,
                           textDirection: TextDirection.ltr,
-                          style: const TextStyle(color: Colors.white70)),
+                          style: TextStyle(color: cTextMuted)),
                       const SizedBox(height: 10),
                       if (permanent)
                         _bigButton(Icons.settings,
@@ -6249,7 +6226,7 @@ jobs:
                           width: 250,
                           height: 250,
                           decoration: BoxDecoration(
-                            border: Border.all(color: Colors.white, width: 3),
+                            border: Border.all(color: cText, width: 3),
                             borderRadius: BorderRadius.circular(20),
                           ),
                         ),
@@ -6269,7 +6246,7 @@ jobs:
                           ),
                           icon: const Icon(Icons.photo_library),
                           label: Text(tr('افزودن از گالری', 'Add from gallery'),
-                              style: const TextStyle(fontSize: 17)),
+                              style: TextStyle(fontSize: 17)),
                         ),
                       ),
                     ),
